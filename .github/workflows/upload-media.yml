@@ -21,7 +21,7 @@ jobs:
           echo "MEDIA_FILES<<EOF" >> $GITHUB_ENV
           echo "$MEDIA_FILES" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
-          echo "Ficheiros encontrados: "
+          echo "Ficheiros encontrados:"
           echo "$MEDIA_FILES"
 
       - name: Get Repository Name
