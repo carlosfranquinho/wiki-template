@@ -1,0 +1,117 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/27.0.9 Chrome/134.0.6998.205 Electron/35.4.0 Safari/537.36" version="27.0.9">
+  <diagram name="Page-1" id="6eN0qRXXGN7rTFQrEPkf">
+    <mxGraphModel dx="1226" dy="736" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-24" value="Mongo Atlas" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;dashed=1;verticalAlign=top;align=left;" parent="1" vertex="1">
+          <mxGeometry x="40" y="750" width="210" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-25" value="IDP CTT" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;dashed=1;verticalAlign=top;align=left;" parent="1" vertex="1">
+          <mxGeometry y="245" width="850" height="485" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-1" value="CommercialCatalog Service&lt;div&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;(Multiple instances)&lt;/font&gt;&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+          <mxGeometry x="95" y="390" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-5" value="&lt;span style=&quot;color: rgb(0, 0, 0); font-family: Helvetica; font-size: 11px; font-style: normal; font-variant-ligatures: normal; font-variant-caps: normal; font-weight: 400; letter-spacing: normal; orphans: 2; text-align: center; text-indent: 0px; text-transform: none; widows: 2; word-spacing: 0px; -webkit-text-stroke-width: 0px; white-space: nowrap; background-color: rgb(255, 255, 255); text-decoration-thickness: initial; text-decoration-style: initial; text-decoration-color: initial; float: none; display: inline !important;&quot;&gt;CRUD operations&lt;/span&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="JQT92KXYJx1Uvdw0XlJT-2" target="JQT92KXYJx1Uvdw0XlJT-1" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-2" value="API Rest" style="rounded=0;whiteSpace=wrap;html=1;fillColor=default;verticalAlign=middle;align=center;" parent="1" vertex="1">
+          <mxGeometry x="80" y="140" width="150" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-4" value="CRUD operations" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="JQT92KXYJx1Uvdw0XlJT-3" target="JQT92KXYJx1Uvdw0XlJT-2" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-3" value="App 1...N" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+          <mxGeometry x="95" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-10" value="Mongo Streams&lt;div&gt;broadcasts changes to&lt;/div&gt;&lt;div&gt;entities and their documents&lt;/div&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="JQT92KXYJx1Uvdw0XlJT-6" target="JQT92KXYJx1Uvdw0XlJT-8" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="280" y="810" />
+              <mxPoint x="280" y="420" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-6" value="MongoDb" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;" parent="1" vertex="1">
+          <mxGeometry x="125" y="770" width="60" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-7" value="Persists entities and&lt;div&gt;their documents&lt;/div&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="JQT92KXYJx1Uvdw0XlJT-1" target="JQT92KXYJx1Uvdw0XlJT-6" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-8" value="DbListener Service&lt;div&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;(Single instance)&lt;/font&gt;&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+          <mxGeometry x="340" y="390" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-13" value="Pulls from the queue&lt;div&gt;changes to entities and&lt;/div&gt;&lt;div&gt;their documents&lt;/div&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="JQT92KXYJx1Uvdw0XlJT-9" target="JQT92KXYJx1Uvdw0XlJT-12" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="580" y="615" />
+              <mxPoint x="580" y="420" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-9" value="Redis" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;" parent="1" vertex="1">
+          <mxGeometry x="370" y="575" width="60" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-11" value="&lt;div&gt;1) Inserts into Redis Queue changes&lt;/div&gt;&lt;div&gt;to entities and their documents.&lt;/div&gt;&lt;div&gt;2) Persists Mongo Stream&lt;div&gt;recovery data.&lt;/div&gt;&lt;/div&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="JQT92KXYJx1Uvdw0XlJT-8" target="JQT92KXYJx1Uvdw0XlJT-9" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-17" value="Publishes changes&lt;div&gt;in Kafka topics&lt;/div&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" parent="1" source="JQT92KXYJx1Uvdw0XlJT-12" target="JQT92KXYJx1Uvdw0XlJT-16" edge="1">
+          <mxGeometry x="0.4074" relative="1" as="geometry">
+            <mxPoint y="-1" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-19" value="Invokes HTTPS APIs&lt;div&gt;with changes&lt;/div&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" parent="1" source="JQT92KXYJx1Uvdw0XlJT-12" target="JQT92KXYJx1Uvdw0XlJT-18" edge="1">
+          <mxGeometry x="0.4074" relative="1" as="geometry">
+            <mxPoint y="-1" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-12" value="Notification Service&lt;div&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;(Multiple instances)&lt;/font&gt;&lt;br&gt;&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+          <mxGeometry x="665" y="390" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-14" value="Redis" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;" parent="1" vertex="1">
+          <mxGeometry x="695" y="575" width="60" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-15" value="Persists notification&lt;div&gt;configurations for the existing&lt;/div&gt;&lt;div&gt;entities&lt;/div&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="JQT92KXYJx1Uvdw0XlJT-12" target="JQT92KXYJx1Uvdw0XlJT-14" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-16" value="Kafka topic 1...N" style="rounded=0;whiteSpace=wrap;html=1;fillColor=default;verticalAlign=middle;align=center;" parent="1" vertex="1">
+          <mxGeometry x="560" y="140" width="150" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-18" value="API Gateway 1...N" style="rounded=0;whiteSpace=wrap;html=1;fillColor=default;verticalAlign=middle;align=center;" parent="1" vertex="1">
+          <mxGeometry x="740" y="140" width="150" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-20" value="MongoDb" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;" parent="1" vertex="1">
+          <mxGeometry x="95" y="830" width="60" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-21" value="MongoDb" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;" parent="1" vertex="1">
+          <mxGeometry x="155" y="830" width="60" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-26" value="Cluster com 1 primary e X secondaries com replica set." style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffff88;strokeColor=#36393d;align=left;verticalAlign=top;" parent="1" vertex="1">
+          <mxGeometry x="85" y="920" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-27" value="Não é possível escalar horizontalmente este serviço porque as streams só suportam 1 consumidor.&lt;div&gt;Todas as instâncias iriam receber todas as alterações.&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffff88;strokeColor=#36393d;align=left;verticalAlign=top;" parent="1" vertex="1">
+          <mxGeometry x="360" y="260" width="150" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-29" value="Vai buscar as configurações ao&amp;nbsp;&lt;span style=&quot;text-align: center;&quot;&gt;CommercialCatalog&lt;/span&gt;&amp;nbsp;Service, via a API REST, caso não as tenha." style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffff88;strokeColor=#36393d;align=left;verticalAlign=top;" parent="1" vertex="1">
+          <mxGeometry x="650" y="660" width="180" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-30" value="O payload das notificações é standardizado pela aplicação.&lt;div&gt;Os consumidores é que se terão de adaptar ao schema da notificação.&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffff88;strokeColor=#36393d;align=left;verticalAlign=top;" parent="1" vertex="1">
+          <mxGeometry x="660" y="10" width="150" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="JQT92KXYJx1Uvdw0XlJT-32" value="&lt;b&gt;&lt;font style=&quot;font-size: 14px;&quot;&gt;CommercialCatalog Service:&lt;/font&gt;&lt;/b&gt;&lt;div&gt;- Faz handling dos pedidos que entram na API&lt;/div&gt;&lt;div&gt;- Faz o CRUD para entidades&lt;/div&gt;&lt;div&gt;- Faz o CRUD para documentos de uma entidade&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;&lt;font style=&quot;font-size: 14px;&quot;&gt;DbListener Service:&lt;/font&gt;&lt;/b&gt;&lt;/div&gt;&lt;div&gt;- Regista-se no Streams da MongoDb para receber qualquer alteração que seja feita a entidades ou aos seus documentos.&lt;/div&gt;&lt;div&gt;- Não tem lógica de negócio&lt;/div&gt;&lt;div&gt;- Apenas transforma a informação que recebe via Mongo Streams num schema standard da aplicação&lt;/div&gt;&lt;div&gt;- Coloca as alterações (no schema standard) numa Redis Queue para posterior processamento&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;&lt;font style=&quot;font-size: 14px;&quot;&gt;Notification Service:&lt;/font&gt;&lt;/b&gt;&lt;/div&gt;&lt;div&gt;- Puxa da queue as alterações&lt;/div&gt;&lt;div&gt;- Se foi uma alteração às configurações de uma entidade, atualiza na sua cache as configurações de notificações atualizadas&lt;/div&gt;&lt;div&gt;- Se foi uma alteração num documento de uma entidade, verifica se essa entidade tem notificações configuradas&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- Se tiver envia um payload standard para o destino&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- Para MVP os destinos suportados serão tópicos Kafka e HTTPS&lt;br&gt;&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffff88;strokeColor=#36393d;align=left;verticalAlign=top;" parent="1" vertex="1">
+          <mxGeometry x="940" y="280" width="300" height="450" as="geometry" />
+        </mxCell>
+        <mxCell id="im4WPLcRwoJhTIddqtLK-2" value="" style="shape=image;verticalLabelPosition=bottom;labelBackgroundColor=default;verticalAlign=top;aspect=fixed;imageAspect=0;image=https://upload.wikimedia.org/wikipedia/commons/thumb/7/7d/Microsoft_.NET_logo.svg/2048px-Microsoft_.NET_logo.svg.png;" parent="1" vertex="1">
+          <mxGeometry x="90" y="383" width="17" height="17" as="geometry" />
+        </mxCell>
+        <mxCell id="im4WPLcRwoJhTIddqtLK-3" value="" style="shape=image;verticalLabelPosition=bottom;labelBackgroundColor=default;verticalAlign=top;aspect=fixed;imageAspect=0;image=https://upload.wikimedia.org/wikipedia/commons/thumb/7/7d/Microsoft_.NET_logo.svg/2048px-Microsoft_.NET_logo.svg.png;" parent="1" vertex="1">
+          <mxGeometry x="330" y="383" width="17" height="17" as="geometry" />
+        </mxCell>
+        <mxCell id="im4WPLcRwoJhTIddqtLK-4" value="" style="shape=image;verticalLabelPosition=bottom;labelBackgroundColor=default;verticalAlign=top;aspect=fixed;imageAspect=0;image=https://upload.wikimedia.org/wikipedia/commons/thumb/7/7d/Microsoft_.NET_logo.svg/2048px-Microsoft_.NET_logo.svg.png;" parent="1" vertex="1">
+          <mxGeometry x="660" y="383" width="17" height="17" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

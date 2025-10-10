@@ -1,0 +1,83 @@
+name: Upload Media to Wiki.js
+
+on:
+  workflow_dispatch:
+
+env:
+  WIKI_URL: https://wiki.exemplo.com/graphql  # <-- ajusta para o teu
+  PARENT_FOLDER_ID: 1
+
+jobs:
+  upload-docs-media:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect Media Files
+        id: detect
+        run: |
+          MEDIA_FILES=$(find documentation/ -type f ! -name "*.md")
+          echo "MEDIA_FILES<<EOF" >> $GITHUB_ENV
+          echo "$MEDIA_FILES" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          echo "Ficheiros encontrados:"
+          echo "$MEDIA_FILES"
+
+      - name: Get Repository Name
+        id: repo
+        run: |
+          repo_name="${GITHUB_REPOSITORY##*/}"   # extrai apenas o nome do repo
+          echo "REPO_NAME=${repo_name,,}" >> $GITHUB_ENV
+          echo "Repository name: ${repo_name,,}"
+
+      - name: Create folder in Wiki.js (if needed)
+        id: folder
+        env:
+          WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
+        run: |
+          QUERY="query { assets { folders(parentFolderId: $PARENT_FOLDER_ID) { id name } } }"
+          JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
+
+          RESULT=$(curl -s -X POST "$WIKI_URL" \
+            -H "Authorization: Bearer $WIKI_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$JSON")
+
+          FOLDER_ID=$(echo "$RESULT" | jq -r --arg NAME "$REPO_NAME" '.data.assets.folders[] | select(.name == $NAME) | .id')
+
+          if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
+            echo "Folder not found, creating..."
+            MUTATION="mutation { assets { createFolder(parentFolderId: $PARENT_FOLDER_ID, slug: \"$REPO_NAME\", name: \"$REPO_NAME\") { responseResult { message succeeded }, id } } }"
+            JSON=$(jq -n --arg q "$MUTATION" '{ query: $q }')
+
+            RESULT=$(curl -s -X POST "$WIKI_URL" \
+              -H "Authorization: Bearer $WIKI_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "$JSON")
+
+            FOLDER_ID=$(echo "$RESULT" | jq -r '.data.assets.createFolder.id')
+            echo "Folder created with ID $FOLDER_ID"
+          else
+            echo "Folder already exists with ID $FOLDER_ID"
+          fi
+
+          echo "FOLDER_ID=$FOLDER_ID" >> $GITHUB_ENV
+
+      - name: Upload Media Files
+        env:
+          WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
+        run: |
+          if [ -z "$MEDIA_FILES" ]; then
+            echo "No media files to upload."
+            exit 0
+          fi
+
+          for filepath in $MEDIA_FILES; do
+            echo "Uploading $filepath"
+            curl -s -X POST "${WIKI_URL%/graphql}/u" \
+              -H "Authorization: Bearer $WIKI_API_TOKEN" \
+              -F "mediaUpload={\"folderId\":$FOLDER_ID}" \
+              -F "mediaUpload=@$filepath" \
+              | jq .
+          done
