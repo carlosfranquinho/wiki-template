@@ -66,7 +66,8 @@ jobs:
             exit 1
           fi
 
-          FOLDER_ID=$(echo "$RESULT" | jq -r --arg NAME "$REPO_NAME" '.data.assets.folders[] | select(.name == $NAME) | .id')
+          # try to find existing repo folder
+          FOLDER_ID=$(echo "$RESULT" | jq -r --arg NAME "$REPO_NAME" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
 
           if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
             echo "Folder not found, creating..."
@@ -87,7 +88,47 @@ jobs:
               exit 1
             fi
 
-            FOLDER_ID=$(echo "$RESULT" | jq -r '.data.assets.createFolder.id')
+            # check for graphql errors
+            if echo "$RESULT" | jq -e '.errors? != null' >/dev/null 2>&1; then
+              echo "GraphQL returned errors while creating folder:"
+              echo "$RESULT" | jq .errors
+              echo "Full response:"
+              echo "$RESULT"
+              exit 1
+            fi
+
+            FOLDER_ID=$(echo "$RESULT" | jq -r '.data.assets.createFolder.id' || true)
+            if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
+              # try re-listing folders to see if it was created but id not returned
+              echo "Creation returned null id; re-listing folders to try to find the folder by name..."
+              RESULT2=$(curl -s -X POST "$GRAPHQL_URL" \
+                -H "Authorization: Bearer $WIKI_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                --data "$JSON") # reuse last JSON (mutation) won't help; instead perform query again
+
+              QUERY2=$(echo "$QUERY_TEMPLATE" | sed "s/\$PARENT_FOLDER_ID/$PARENT_FOLDER_ID/g")
+              JSON2=$(jq -n --arg q "$QUERY2" '{ query: $q }')
+              RESULT2=$(curl -s -X POST "$GRAPHQL_URL" \
+                -H "Authorization: Bearer $WIKI_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                --data "$JSON2")
+
+              if ! echo "$RESULT2" | jq . >/dev/null 2>&1; then
+                echo "ERROR: Non-JSON response when re-listing folders:"
+                echo "$RESULT2"
+                exit 1
+              fi
+
+              FOLDER_ID=$(echo "$RESULT2" | jq -r --arg NAME "$REPO_NAME" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
+            fi
+
+            if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
+              echo "ERROR: Could not obtain a valid folder ID after creation. Response from create:"
+              echo "$RESULT"
+              echo "Please check your WIKI_API_TOKEN permissions and the GRAPHQL endpoint."
+              exit 1
+            fi
+
             echo "Folder created with ID $FOLDER_ID"
           else
             echo "Folder already exists with ID $FOLDER_ID"
@@ -113,6 +154,12 @@ jobs:
           ensure_folder_path() {
             local parent_id="$1"
             local path="$2"
+
+            # fallback if parent_id is empty/null: use PARENT_FOLDER_ID
+            if [ -z "$parent_id" ] || [ "$parent_id" = "null" ]; then
+              parent_id="$PARENT_FOLDER_ID"
+            fi
+
             IFS='/' read -ra parts <<< "$path"
             for seg in "${parts[@]}"; do
               [ -z "$seg" ] && continue
@@ -132,12 +179,11 @@ jobs:
                 exit 1
               fi
 
-              FOLDER_ID=$(echo "$RESULT" | jq -r --arg NAME "$seg" '.data.assets.folders[] | select(.name == $NAME) | .id')
+              FOLDER_ID=$(echo "$RESULT" | jq -r --arg NAME "$seg" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
 
               if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
                 # create folder
                 MUTATION_TEMPLATE='mutation { assets { createFolder(parentFolderId: PARENT_ID, slug: "SLUG", name: "NAME") { id } } }'
-                # use slug same as name (could be sanitized if needed)
                 MUTATION=$(echo "$MUTATION_TEMPLATE" | sed "s|PARENT_ID|$parent_id|g" | sed "s|SLUG|$seg|g" | sed "s|NAME|$seg|g")
                 JSON=$(jq -n --arg q "$MUTATION" '{ query: $q }')
 
@@ -152,7 +198,39 @@ jobs:
                   exit 1
                 fi
 
-                FOLDER_ID=$(echo "$RESULT" | jq -r '.data.assets.createFolder.id')
+                if echo "$RESULT" | jq -e '.errors? != null' >/dev/null 2>&1; then
+                  echo "GraphQL returned errors while creating folder '$seg':"
+                  echo "$RESULT" | jq .errors
+                  echo "Full response:"
+                  echo "$RESULT"
+                  exit 1
+                fi
+
+                FOLDER_ID=$(echo "$RESULT" | jq -r '.data.assets.createFolder.id' || true)
+
+                # if still null, try to re-list children and find by name
+                if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
+                  echo "Creation returned null id for '$seg'; re-listing children..."
+                  QUERY2=$(echo "$QUERY_TEMPLATE" | sed "s|PARENT_ID|$parent_id|g")
+                  JSON2=$(jq -n --arg q "$QUERY2" '{ query: $q }')
+                  RESULT2=$(curl -s -X POST "$GRAPHQL_URL" \
+                    -H "Authorization: Bearer $WIKI_API_TOKEN" \
+                    -H "Content-Type: application/json" \
+                    --data "$JSON2")
+                  if ! echo "$RESULT2" | jq . >/dev/null 2>&1; then
+                    echo "ERROR: Non-JSON response when re-listing children:"
+                    echo "$RESULT2"
+                    exit 1
+                  fi
+                  FOLDER_ID=$(echo "$RESULT2" | jq -r --arg NAME "$seg" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
+                fi
+
+                if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
+                  echo "ERROR: Could not create/find folder '$seg' under parent $parent_id. Response:"
+                  echo "$RESULT"
+                  exit 1
+                fi
+
                 echo "Created folder '$seg' (id: $FOLDER_ID) under parent $parent_id"
               else
                 echo "Found folder '$seg' (id: $FOLDER_ID) under parent $parent_id"
