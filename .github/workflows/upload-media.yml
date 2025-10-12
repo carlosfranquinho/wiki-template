@@ -45,6 +45,13 @@ jobs:
             -H "Content-Type: application/json" \
             --data "$JSON")
 
+          # validate JSON before piping to jq
+          if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
+            echo "ERROR: Non-JSON response when querying folders:"
+            echo "$RESULT"
+            exit 1
+          fi
+
           FOLDER_ID=$(echo "$RESULT" | jq -r --arg NAME "$REPO_NAME" '.data.assets.folders[] | select(.name == $NAME) | .id')
 
           if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
@@ -58,6 +65,13 @@ jobs:
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data "$JSON")
+
+            # validate JSON before piping to jq
+            if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
+              echo "ERROR: Non-JSON response when creating folder:"
+              echo "$RESULT"
+              exit 1
+            fi
 
             FOLDER_ID=$(echo "$RESULT" | jq -r '.data.assets.createFolder.id')
             echo "Folder created with ID $FOLDER_ID"
@@ -79,9 +93,18 @@ jobs:
 
           for filepath in $MEDIA_FILES; do
             echo "Uploading $filepath"
-            curl -s -X POST "${WIKI_URL%/graphql}/u" \
+            RESPONSE=$(curl -s -X POST "${WIKI_URL%/graphql}/u" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -F "mediaUpload={\"folderId\":$FOLDER_ID}" \
-              -F "mediaUpload=@$filepath" \
-              | jq .
+              -F "mediaUpload=@$filepath")
+
+            # check if the response is JSON before piping to jq
+            if ! echo "$RESPONSE" | jq . >/dev/null 2>&1; then
+              echo "Upload response is not valid JSON for file: $filepath"
+              echo "$RESPONSE"
+              # decide whether to continue or exit; exiting to highlight error
+              exit 1
+            else
+              echo "$RESPONSE" | jq .
+            fi
           done
