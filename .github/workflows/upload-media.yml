@@ -17,7 +17,17 @@ jobs:
       - name: Detect Media Files
         id: detect
         run: |
-          MEDIA_FILES=$(find documentation/ -type f ! -name "*.md")
+          # build newline-separated list containing README.md, CHANGELOG.md (if exist) and all files under documentation/
+          MEDIA_FILES=""
+          [ -f README.md ] && MEDIA_FILES="$(printf "%s\n" "README.md")"
+          [ -f CHANGELOG.md ] && MEDIA_FILES="$(printf "%s\n%s" "$MEDIA_FILES" "CHANGELOG.md")"
+          if [ -d documentation ]; then
+            while IFS= read -r -d '' f; do
+              MEDIA_FILES="$(printf "%s\n%s" "$MEDIA_FILES" "$f")"
+            done < <(find documentation/ -type f -print0)
+          fi
+          # remove empty lines and duplicates
+          MEDIA_FILES="$(echo "$MEDIA_FILES" | sed '/^$/d' | awk '!seen[$0]++')"
           echo "MEDIA_FILES<<EOF" >> $GITHUB_ENV
           echo "$MEDIA_FILES" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
@@ -90,7 +100,8 @@ jobs:
         env:
           WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
         run: |
-          # ensure UPLOAD_URL is available (same logic as above)
+          # compute endpoints
+          GRAPHQL_URL="${WIKI_URL%/}/graphql"
           UPLOAD_URL="${WIKI_URL%/}/u"
 
           if [ -z "$MEDIA_FILES" ]; then
@@ -98,21 +109,88 @@ jobs:
             exit 0
           fi
 
-          # iterate robustly over newline-separated media file list
+          # helper: ensure a nested path exists under a given parent folder id; returns final folder id
+          ensure_folder_path() {
+            local parent_id="$1"
+            local path="$2"
+            IFS='/' read -ra parts <<< "$path"
+            for seg in "${parts[@]}"; do
+              [ -z "$seg" ] && continue
+              # query children folders of current parent
+              QUERY_TEMPLATE='query { assets { folders(parentFolderId: PARENT_ID) { id name } } }'
+              QUERY=$(echo "$QUERY_TEMPLATE" | sed "s|PARENT_ID|$parent_id|g")
+              JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
+
+              RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
+                -H "Authorization: Bearer $WIKI_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                --data "$JSON")
+
+              if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
+                echo "ERROR: Non-JSON response when listing folders (parent $parent_id):"
+                echo "$RESULT"
+                exit 1
+              fi
+
+              FOLDER_ID=$(echo "$RESULT" | jq -r --arg NAME "$seg" '.data.assets.folders[] | select(.name == $NAME) | .id')
+
+              if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
+                # create folder
+                MUTATION_TEMPLATE='mutation { assets { createFolder(parentFolderId: PARENT_ID, slug: "SLUG", name: "NAME") { id } } }'
+                # use slug same as name (could be sanitized if needed)
+                MUTATION=$(echo "$MUTATION_TEMPLATE" | sed "s|PARENT_ID|$parent_id|g" | sed "s|SLUG|$seg|g" | sed "s|NAME|$seg|g")
+                JSON=$(jq -n --arg q "$MUTATION" '{ query: $q }')
+
+                RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
+                  -H "Authorization: Bearer $WIKI_API_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  --data "$JSON")
+
+                if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
+                  echo "ERROR: Non-JSON response when creating folder '$seg' under parent $parent_id:"
+                  echo "$RESULT"
+                  exit 1
+                fi
+
+                FOLDER_ID=$(echo "$RESULT" | jq -r '.data.assets.createFolder.id')
+                echo "Created folder '$seg' (id: $FOLDER_ID) under parent $parent_id"
+              else
+                echo "Found folder '$seg' (id: $FOLDER_ID) under parent $parent_id"
+              fi
+
+              parent_id="$FOLDER_ID"
+            done
+            echo "$parent_id"
+          }
+
+          # iterate over newline-separated media file list
           echo "$MEDIA_FILES" | while IFS= read -r filepath || [ -n "$filepath" ]; do
             [ -z "$filepath" ] && continue
-            echo "Uploading $filepath"
+            echo "Processing $filepath"
 
-            # capture body + http status code
+            # determine relative directory within the repo (strip leading ./ if any)
+            relpath="${filepath#./}"
+            dirpath="$(dirname "$relpath")"
+
+            # target parent folder starts at repo folder (FOLDER_ID exported earlier)
+            target_parent="$FOLDER_ID"
+
+            # if file is under a subpath (e.g. documentation/...), create/resolve subfolders
+            if [ "$dirpath" != "." ] && [ "$dirpath" != "$relpath" ]; then
+              # ensure nested folders under repo folder
+              target_parent="$(ensure_folder_path "$FOLDER_ID" "$dirpath")"
+            fi
+
+            echo "Uploading $filepath to folder id $target_parent"
+
             RESPONSE_WITH_STATUS=$(curl -s -w "\n%{http_code}" -X POST "$UPLOAD_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
-              -F "mediaUpload={\"folderId\":$FOLDER_ID}" \
+              -F "mediaUpload={\"folderId\":$target_parent}" \
               -F "mediaUpload=@$filepath")
             HTTP_STATUS=$(echo "$RESPONSE_WITH_STATUS" | tail -n1)
             BODY=$(echo "$RESPONSE_WITH_STATUS" | sed '$d')
 
             if [[ "$HTTP_STATUS" =~ ^2 ]]; then
-              # success: try to pretty-print JSON, otherwise show raw body
               if echo "$BODY" | jq . >/dev/null 2>&1; then
                 echo "$BODY" | jq .
               else
