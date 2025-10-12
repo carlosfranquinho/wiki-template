@@ -36,11 +36,15 @@ jobs:
         env:
           WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
         run: |
+          # compute API endpoints from WIKI_URL
+          GRAPHQL_URL="${WIKI_URL%/}/graphql"
+          UPLOAD_URL="${WIKI_URL%/}/u"
+
           QUERY_TEMPLATE='query { assets { folders(parentFolderId: $PARENT_FOLDER_ID) { id name } } }'
           QUERY=$(echo "$QUERY_TEMPLATE" | sed "s/\$PARENT_FOLDER_ID/$PARENT_FOLDER_ID/g")
           JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
 
-          RESULT=$(curl -s -X POST "$WIKI_URL" \
+          RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
             -H "Authorization: Bearer $WIKI_API_TOKEN" \
             -H "Content-Type: application/json" \
             --data "$JSON")
@@ -61,7 +65,7 @@ jobs:
             MUTATION=$(echo "$MUTATION_TEMPLATE" | sed "s/\$PARENT_FOLDER_ID/$PARENT_FOLDER_ID/g" | sed "s/\$REPO_NAME/$REPO_NAME/g")
             JSON=$(jq -n --arg q "$MUTATION" '{ query: $q }')
 
-            RESULT=$(curl -s -X POST "$WIKI_URL" \
+            RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data "$JSON")
@@ -86,6 +90,9 @@ jobs:
         env:
           WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
         run: |
+          # ensure UPLOAD_URL is available (same logic as above)
+          UPLOAD_URL="${WIKI_URL%/}/u"
+
           if [ -z "$MEDIA_FILES" ]; then
             echo "No media files to upload."
             exit 0
@@ -93,7 +100,7 @@ jobs:
 
           for filepath in $MEDIA_FILES; do
             echo "Uploading $filepath"
-            RESPONSE=$(curl -s -X POST "${WIKI_URL%/graphql}/u" \
+            RESPONSE=$(curl -s -X POST "$UPLOAD_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -F "mediaUpload={\"folderId\":$FOLDER_ID}" \
               -F "mediaUpload=@$filepath")
