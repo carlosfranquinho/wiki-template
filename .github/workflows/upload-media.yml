@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 env:
-  WIKI_URL: https://wiki.exemplo.com/graphql  # <-- ajusta par
+  WIKI_URL: http://wiki.franquinho.info
   PARENT_FOLDER_ID: 1
 
 jobs:
