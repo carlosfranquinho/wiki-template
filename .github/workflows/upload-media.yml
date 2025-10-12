@@ -72,9 +72,9 @@ jobs:
           if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
             echo "Folder not found, creating..."
 
-            # do not request non-existent 'id' field from the mutation response
-            MUTATION_TEMPLATE='mutation { assets { createFolder(parentFolderId: $PARENT_FOLDER_ID, slug: "$REPO_NAME", name: "$REPO_NAME") { responseResult { message succeeded } } } }'
-            MUTATION=$(echo "$MUTATION_TEMPLATE" | sed "s/\$PARENT_FOLDER_ID/$PARENT_FOLDER_ID/g" | sed "s/\$REPO_NAME/$REPO_NAME/g")
+            # always include parentFolderId, even if null
+            MUTATION_TEMPLATE='mutation { assets { createFolder(parentFolderId: PARENT_FOLDER_ID, slug: "$REPO_NAME", name: "$REPO_NAME") { responseResult { message succeeded } } } }'
+            MUTATION=$(echo "$MUTATION_TEMPLATE" | sed "s/PARENT_FOLDER_ID/${PARENT_FOLDER_ID:-null}/g" | sed "s/\$REPO_NAME/$REPO_NAME/g")
             JSON_MUT=$(jq -n --arg q "$MUTATION" '{ query: $q }')
 
             RESULT_MUT=$(curl -s -X POST "$GRAPHQL_URL" \
@@ -93,39 +93,14 @@ jobs:
             MESSAGE=$(echo "$RESULT_MUT" | jq -r '.data.assets.createFolder.responseResult.message // empty' 2>/dev/null || true)
             HAS_ERRORS=$(echo "$RESULT_MUT" | jq -e '.errors? != null' >/dev/null 2>&1; echo $?)
 
-            if [ "$HAS_ERRORS" -eq 0 ] || [ "$SUCCEEDED" = "false" ] || echo "$MESSAGE" | grep -qi "foreign key" >/dev/null 2>&1; then
+            if [ "$HAS_ERRORS" -eq 0 ] || [ "$SUCCEEDED" = "false" ]; then
               echo "Creation reported failure or GraphQL errors: $MESSAGE"
-              echo "Retrying creation without parentFolderId (root)..."
-
-              MUTATION_NOPARENT='mutation { assets { createFolder(slug: "$REPO_NAME", name: "$REPO_NAME") { responseResult { message succeeded } } } }'
-              MUTATION2=$(echo "$MUTATION_NOPARENT" | sed "s/\$REPO_NAME/$REPO_NAME/g")
-              JSON_MUT2=$(jq -n --arg q "$MUTATION2" '{ query: $q }')
-
-              RESULT_MUT2=$(curl -s -X POST "$GRAPHQL_URL" \
-                -H "Authorization: Bearer $WIKI_API_TOKEN" \
-                -H "Content-Type: application/json" \
-                --data "$JSON_MUT2")
-
-              if ! echo "$RESULT_MUT2" | jq . >/dev/null 2>&1; then
-                echo "ERROR: Non-JSON response when creating folder without parent:"
-                echo "$RESULT_MUT2"
-                exit 1
-              fi
-
-              if echo "$RESULT_MUT2" | jq -e '.errors? != null' >/dev/null 2>&1; then
-                echo "GraphQL returned errors while creating folder (no parent):"
-                echo "$RESULT_MUT2" | jq .errors
-                echo "Full response:"
-                echo "$RESULT_MUT2"
-                exit 1
-              fi
-
-              # set RESULT_MUT to latest for diagnostics if needed
-              RESULT_MUT="$RESULT_MUT2"
+              echo "Full response:"
+              echo "$RESULT_MUT"
+              exit 1
             fi
 
-            # after mutation(s), re-query children of provided parent and also root to find the created folder and get its id
-            # first try original parent
+            # after mutation, re-query children of provided parent to find the created folder and get its id
             QUERY_AFTER=$(echo "$QUERY_TEMPLATE" | sed "s/\$PARENT_FOLDER_ID/$PARENT_FOLDER_ID/g")
             JSON_AFTER=$(jq -n --arg q "$QUERY_AFTER" '{ query: $q }')
             RESULT_AFTER=$(curl -s -X POST "$GRAPHQL_URL" \
@@ -139,19 +114,6 @@ jobs:
             fi
 
             FOLDER_ID=$(echo "$RESULT_AFTER" | jq -r --arg NAME "$REPO_NAME" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
-
-            # if not found under original parent, check root (parentFolderId: null)
-            if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
-              QUERY_ROOT='query { assets { folders(parentFolderId: null) { id name } } }'
-              JSON_ROOT=$(jq -n --arg q "$QUERY_ROOT" '{ query: $q }')
-              RESULT_ROOT=$(curl -s -X POST "$GRAPHQL_URL" \
-                -H "Authorization: Bearer $WIKI_API_TOKEN" \
-                -H "Content-Type: application/json" \
-                --data "$JSON_ROOT")
-              if echo "$RESULT_ROOT" | jq . >/dev/null 2>&1; then
-                FOLDER_ID=$(echo "$RESULT_ROOT" | jq -r --arg NAME "$REPO_NAME" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
-              fi
-            fi
 
             if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
               echo "ERROR: Could not obtain a valid folder ID after creation. Creation response:"
@@ -185,9 +147,9 @@ jobs:
             local parent_id="$1"
             local path="$2"
 
-            # fallback if parent_id is empty/null: use PARENT_FOLDER_ID
+            # fallback if parent_id is empty/null: use null for root
             if [ -z "$parent_id" ] || [ "$parent_id" = "null" ]; then
-              parent_id="$PARENT_FOLDER_ID"
+              parent_id="null"
             fi
 
             IFS='/' read -ra parts <<< "$path"
@@ -212,7 +174,7 @@ jobs:
               FOLDER_ID=$(echo "$RESULT" | jq -r --arg NAME "$seg" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
 
               if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
-                # do not request id in mutation; re-list after creation to find id
+                # always include parentFolderId, even if null
                 MUTATION_TEMPLATE='mutation { assets { createFolder(parentFolderId: PARENT_ID, slug: "SLUG", name: "NAME") { responseResult { message succeeded } } } }'
                 MUTATION=$(echo "$MUTATION_TEMPLATE" | sed "s|PARENT_ID|$parent_id|g" | sed "s|SLUG|$seg|g" | sed "s|NAME|$seg|g")
                 JSON_MUT=$(jq -n --arg q "$MUTATION" '{ query: $q }')
@@ -230,32 +192,14 @@ jobs:
 
                 SUCCEEDED=$(echo "$RESULT_MUT" | jq -r '.data.assets.createFolder.responseResult.succeeded // empty' 2>/dev/null || true)
                 MSG=$(echo "$RESULT_MUT" | jq -r '.data.assets.createFolder.responseResult.message // empty' 2>/dev/null || true)
-                if [ "$SUCCEEDED" = "false" ] || echo "$MSG" | grep -qi "foreign key" >/dev/null 2>&1; then
+                if [ "$SUCCEEDED" = "false" ]; then
                   echo "Creation of '$seg' under parent $parent_id failed: $MSG"
-                  echo "Retrying creation of '$seg' without parent (root)..."
-                  MUTATION_NOPARENT='mutation { assets { createFolder(slug: "SLUG", name: "NAME") { responseResult { message succeeded } } } }'
-                  MUTATION2=$(echo "$MUTATION_NOPARENT" | sed "s|SLUG|$seg|g" | sed "s|NAME|$seg|g")
-                  JSON_MUT2=$(jq -n --arg q "$MUTATION2" '{ query: $q }')
-                  RESULT_MUT2=$(curl -s -X POST "$GRAPHQL_URL" \
-                    -H "Authorization: Bearer $WIKI_API_TOKEN" \
-                    -H "Content-Type: application/json" \
-                    --data "$JSON_MUT2")
-                  if ! echo "$RESULT_MUT2" | jq . >/dev/null 2>&1; then
-                    echo "ERROR: Non-JSON response when creating folder '$seg' without parent:"
-                    echo "$RESULT_MUT2"
-                    exit 1
-                  fi
-                  if echo "$RESULT_MUT2" | jq -e '.errors? != null' >/dev/null 2>&1; then
-                    echo "GraphQL returned errors while creating folder '$seg' without parent:"
-                    echo "$RESULT_MUT2" | jq .errors
-                    echo "Full response:"
-                    echo "$RESULT_MUT2"
-                    exit 1
-                  fi
-                  RESULT_MUT="$RESULT_MUT2"
+                  echo "Full response:"
+                  echo "$RESULT_MUT"
+                  exit 1
                 fi
 
-                # re-list children (try original parent first)
+                # re-list children to find the newly created folder id
                 QUERY2=$(echo "$QUERY_TEMPLATE" | sed "s|PARENT_ID|$parent_id|g")
                 JSON2=$(jq -n --arg q "$QUERY2" '{ query: $q }')
                 RESULT2=$(curl -s -X POST "$GRAPHQL_URL" \
@@ -270,24 +214,80 @@ jobs:
 
                 FOLDER_ID=$(echo "$RESULT2" | jq -r --arg NAME "$seg" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
 
-                # if still not found, check root
-                if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
-                  QUERY_ROOT='query { assets { folders(parentFolderId: null) { id name } } }'
-                  JSON_ROOT=$(jq -n --arg q "$QUERY_ROOT" '{ query: $q }')
-                  RESULT_ROOT=$(curl -s -X POST "$GRAPHQL_URL" \
-                    -H "Authorization: Bearer $WIKI_API_TOKEN" \
-                    -H "Content-Type: application/json" \
-                    --data "$JSON_ROOT")
-                  if echo "$RESULT_ROOT" | jq . >/dev/null 2>&1; then
-                    FOLDER_ID=$(echo "$RESULT_ROOT" | jq -r --arg NAME "$seg" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
-                    # if found in root, update parent_id so nesting continues from that folder
-                  fi
-                fi
-
                 if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
                   echo "ERROR: Could not create/find folder '$seg' under parent $parent_id. Creation response:"
                   echo "$RESULT_MUT"
                   exit 1
+                fi
+
+                echo "Created folder '$seg' (id: $FOLDER_ID) under parent $parent_id"
+              else
+                echo "Found folder '$seg' (id: $FOLDER_ID) under parent $parent_id"
+              fi
+
+              parent_id="$FOLDER_ID"
+            done
+            echo "$parent_id"
+          }
+
+          # iterate over newline-separated media file list
+          echo "$MEDIA_FILES" | while IFS= read -r filepath || [ -n "$filepath" ]; do
+            [ -z "$filepath" ] && continue
+            echo "Processing $filepath"
+
+            # determine relative directory within the repo (strip leading ./ if any)
+            relpath="${filepath#./}"
+            dirpath="$(dirname "$relpath")"
+
+            # target parent folder starts at repo folder (FOLDER_ID exported earlier)
+            target_parent="$FOLDER_ID"
+
+            # if file is under a subpath (e.g. documentation/...), create/resolve subfolders
+            if [ "$dirpath" != "." ] && [ "$dirpath" != "$relpath" ]; then
+              # ensure nested folders under repo folder
+              target_parent="$(ensure_folder_path "$FOLDER_ID" "$dirpath")"
+            fi
+
+            echo "Uploading $filepath to folder id $target_parent"
+
+            RESPONSE_WITH_STATUS=$(curl -s -w "\n%{http_code}" -X POST "$UPLOAD_URL" \
+              -H "Authorization: Bearer $WIKI_API_TOKEN" \
+              -F "mediaUpload={\"folderId\":$target_parent}" \
+              -F "mediaUpload=@$filepath")
+            HTTP_STATUS=$(echo "$RESPONSE_WITH_STATUS" | tail -n1)
+            BODY=$(echo "$RESPONSE_WITH_STATUS" | sed '$d')
+
+            if [[ "$HTTP_STATUS" =~ ^2 ]]; then
+              if echo "$BODY" | jq . >/dev/null 2>&1; then
+                echo "$BODY" | jq .
+              else
+                echo "Upload succeeded (HTTP $HTTP_STATUS) for file: $filepath"
+                echo "$BODY"
+              fi
+            else
+              echo "Upload failed (HTTP $HTTP_STATUS) for file: $filepath"
+              if echo "$BODY" | jq . >/dev/null 2>&1; then
+                echo "$BODY" | jq .
+              else
+                echo "$BODY"
+              fi
+              exit 1
+            fi
+          done
+              else
+                echo "Upload succeeded (HTTP $HTTP_STATUS) for file: $filepath"
+                echo "$BODY"
+              fi
+            else
+              echo "Upload failed (HTTP $HTTP_STATUS) for file: $filepath"
+              if echo "$BODY" | jq . >/dev/null 2>&1; then
+                echo "$BODY" | jq .
+              else
+                echo "$BODY"
+              fi
+              exit 1
+            fi
+          done
                 fi
 
                 echo "Created folder '$seg' (id: $FOLDER_ID) under parent $parent_id"
