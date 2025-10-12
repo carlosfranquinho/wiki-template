@@ -98,20 +98,34 @@ jobs:
             exit 0
           fi
 
-          for filepath in $MEDIA_FILES; do
+          # iterate robustly over newline-separated media file list
+          echo "$MEDIA_FILES" | while IFS= read -r filepath || [ -n "$filepath" ]; do
+            [ -z "$filepath" ] && continue
             echo "Uploading $filepath"
-            RESPONSE=$(curl -s -X POST "$UPLOAD_URL" \
+
+            # capture body + http status code
+            RESPONSE_WITH_STATUS=$(curl -s -w "\n%{http_code}" -X POST "$UPLOAD_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -F "mediaUpload={\"folderId\":$FOLDER_ID}" \
               -F "mediaUpload=@$filepath")
+            HTTP_STATUS=$(echo "$RESPONSE_WITH_STATUS" | tail -n1)
+            BODY=$(echo "$RESPONSE_WITH_STATUS" | sed '$d')
 
-            # check if the response is JSON before piping to jq
-            if ! echo "$RESPONSE" | jq . >/dev/null 2>&1; then
-              echo "Upload response is not valid JSON for file: $filepath"
-              echo "$RESPONSE"
-              # decide whether to continue or exit; exiting to highlight error
-              exit 1
+            if [[ "$HTTP_STATUS" =~ ^2 ]]; then
+              # success: try to pretty-print JSON, otherwise show raw body
+              if echo "$BODY" | jq . >/dev/null 2>&1; then
+                echo "$BODY" | jq .
+              else
+                echo "Upload succeeded (HTTP $HTTP_STATUS) for file: $filepath"
+                echo "$BODY"
+              fi
             else
-              echo "$RESPONSE" | jq .
+              echo "Upload failed (HTTP $HTTP_STATUS) for file: $filepath"
+              if echo "$BODY" | jq . >/dev/null 2>&1; then
+                echo "$BODY" | jq .
+              else
+                echo "$BODY"
+              fi
+              exit 1
             fi
           done
