@@ -106,7 +106,8 @@ jobs:
           set -euo pipefail
 
           # Definir Paths
-          REPO_PATH="${BASE_PATH}/${REPO_NAME}/"
+          BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/.-]/_/g')
+          REPO_PATH="${BASE_PATH}/${REPO_NAME}"
           DOC_PREFIX="${REPO_PATH}documentation/"
 
           echo "🔍 Verificações:"
@@ -384,7 +385,7 @@ jobs:
 
             echo "Saving WIKI_CHANGELOG_ID=$PAGE_ID to repository variables…"
 
-            gh variable set "WIKI_CHANGELOG_ID" --body "$PAGE_ID"
+            #gh variable set "WIKI_CHANGELOG_ID" --body "$PAGE_ID"
           else
             echo "⚠️ Failed to create: $CHANGELOG_PATH"
             echo "$RESULT" | jq .errors
