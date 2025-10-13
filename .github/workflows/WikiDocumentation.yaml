@@ -680,9 +680,20 @@ jobs:
       - name: Get Repository Name
         id: repo
         run: |
-          repo_name="${GITHUB_REPOSITORY##*/}"
-          echo "REPO_NAME=${repo_name,,}" >> $GITHUB_ENV
-          echo "Repository name: ${repo_name,,}"
+          repo_source="${REPO_NAME:-}"
+          if [ -z "$repo_source" ]; then
+            repo_source="${GITHUB_REPOSITORY##*/}"
+          fi
+          slug_base=$(printf '%s' "$repo_source" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || printf '%s' "$repo_source")
+          slug_base=$(printf '%s' "$slug_base" | tr '[:upper:]' '[:lower:]')
+          repo_slug=$(printf '%s' "$slug_base" | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
+          if [ -z "$repo_slug" ]; then
+            repo_slug="${GITHUB_REPOSITORY##*/}"
+            repo_slug="${repo_slug,,}"
+          fi
+          echo "REPO_NAME=$repo_slug" >> $GITHUB_ENV
+          echo "REPO_NAME_DISPLAY=$repo_source" >> $GITHUB_ENV
+          echo "Repository name (slug): $repo_slug"
 
       - name: Create folder in Wiki.js (if needed)
         id: folder
@@ -710,7 +721,7 @@ jobs:
           build_folders_query() {
             local parent="$1"
             jq -nr --argjson parent "$parent" '
-              "query { assets { folders(parentFolderId: " + ($parent|tostring) + ") { id name } } }"
+              "query { assets { folders(parentFolderId: " + ($parent|tostring) + ") { id name slug } } }"
             '
           }
 
@@ -723,8 +734,169 @@ jobs:
             '
           }
 
+          normalize_case() {
+            local input="$1"
+            local norm
+            norm=$(printf '%s' "$input" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || printf '%s' "$input")
+            norm=$(printf '%s' "$norm" | tr '[:upper:]' '[:lower:]')
+            printf '%s' "$norm"
+          }
+
+          slugify() {
+            local input="$1"
+            local norm
+            norm=$(normalize_case "$input")
+            norm=$(printf '%s' "$norm" | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
+            if [ -z "$norm" ]; then
+              norm="folder"
+            fi
+            printf '%s' "$norm"
+          }
+
+          ensure_folder_path() {
+            local parent_id="$1"
+            local path="$2"
+
+            if ! [[ "$parent_id" =~ ^[0-9]+$ ]]; then
+              echo "ERROR: ensure_folder_path requires numeric parent id (received: '$parent_id')." >&2
+              exit 1
+            fi
+
+            [ -z "$path" ] && echo "$parent_id" && return
+
+            local IFS='/'
+            local parts=()
+            read -r -a parts <<< "$path"
+            for seg in "${parts[@]}"; do
+              [ -z "$seg" ] && continue
+              local seg_norm seg_slug
+              seg_norm="$(normalize_case "$seg")"
+              seg_slug="$(slugify "$seg")"
+
+              QUERY=$(build_folders_query "$parent_id")
+              JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
+
+              RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
+                -H "Authorization: Bearer $WIKI_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                --data "$JSON")
+
+              if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
+                echo "ERROR: Non-JSON response when listing folders (parent $parent_id):"
+                echo "$RESULT"
+                exit 1
+              fi
+
+              CHILD_ID=$(echo "$RESULT" | jq -r \
+                --arg NAME "$seg" \
+                --arg NAME_NORM "$seg_norm" \
+                --arg SLUG "$seg_slug" '
+                .data.assets.folders[]? |
+                select(
+                  (.name // "") == $NAME or
+                  (.name // "" | ascii_downcase) == ($NAME | ascii_downcase) or
+                  (.name // "" | ascii_downcase) == ($NAME_NORM | ascii_downcase) or
+                  (.slug // "") == $NAME or
+                  (.slug // "" | ascii_downcase) == ($NAME | ascii_downcase) or
+                  (.slug // "" | ascii_downcase) == ($SLUG | ascii_downcase)
+                ) |
+                .id
+              ' || true)
+
+              if [ -n "$CHILD_ID" ] && [ "$CHILD_ID" != "null" ]; then
+                echo "Found existing folder '$seg' (id: $CHILD_ID) under parent $parent_id"
+                parent_id="$CHILD_ID"
+                if ! [[ "$parent_id" =~ ^[0-9]+$ ]]; then
+                  echo "ERROR: Wiki.js returned a non-numeric folder id ('$parent_id') for '$seg'." >&2
+                  exit 1
+                fi
+                continue
+              fi
+
+              echo "Creating missing folder '$seg' under parent $parent_id"
+
+              MUTATION=$(build_create_mutation "$parent_id" "$seg_slug" "$seg")
+              JSON_MUT=$(jq -n --arg q "$MUTATION" '{ query: $q }')
+
+              RESULT_MUT=$(curl -s -X POST "$GRAPHQL_URL" \
+                -H "Authorization: Bearer $WIKI_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                --data "$JSON_MUT")
+
+              if ! echo "$RESULT_MUT" | jq . >/dev/null 2>&1; then
+                echo "ERROR: Non-JSON response when creating folder '$seg' under parent $parent_id:"
+                echo "$RESULT_MUT"
+                exit 1
+              fi
+
+              HAS_ERRORS=$(echo "$RESULT_MUT" | jq -e '.errors? != null' >/dev/null 2>&1; echo $?)
+              SUCCEEDED=$(echo "$RESULT_MUT" | jq -r '.data.assets.createFolder.responseResult.succeeded // empty' 2>/dev/null || true)
+              MESSAGE=$(echo "$RESULT_MUT" | jq -r '.data.assets.createFolder.responseResult.message // empty' 2>/dev/null || true)
+
+              if [ "$HAS_ERRORS" -eq 0 ] || [ "$SUCCEEDED" != "true" ]; then
+                echo "Creation of '$seg' under parent $parent_id failed: $MESSAGE"
+                echo "Full response:"
+                echo "$RESULT_MUT"
+                exit 1
+              fi
+
+              RESULT2=$(curl -s -X POST "$GRAPHQL_URL" \
+                -H "Authorization: Bearer $WIKI_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                --data "$JSON")
+
+              if echo "$RESULT2" | jq . >/dev/null 2>&1; then
+                CHILD_ID=$(echo "$RESULT2" | jq -r \
+                  --arg NAME "$seg" \
+                  --arg NAME_NORM "$seg_norm" \
+                  --arg SLUG "$seg_slug" '
+                  .data.assets.folders[]? |
+                  select(
+                    (.name // "") == $NAME or
+                    (.name // "" | ascii_downcase) == ($NAME | ascii_downcase) or
+                    (.name // "" | ascii_downcase) == ($NAME_NORM | ascii_downcase) or
+                    (.slug // "") == $NAME or
+                    (.slug // "" | ascii_downcase) == ($NAME | ascii_downcase) or
+                    (.slug // "" | ascii_downcase) == ($SLUG | ascii_downcase)
+                  ) |
+                  .id
+                ' || true)
+              else
+                echo "WARNING: Non-JSON response when re-listing children of $parent_id:"
+                echo "$RESULT2"
+              fi
+
+              if [ -z "$CHILD_ID" ] || [ "$CHILD_ID" = "null" ]; then
+                echo "ERROR: Could not create/find folder '$seg' under parent $parent_id."
+                echo "$RESULT_MUT"
+                exit 1
+              fi
+
+              echo "Created folder '$seg' (id: $CHILD_ID) under parent $parent_id"
+              parent_id="$CHILD_ID"
+              if ! [[ "$parent_id" =~ ^[0-9]+$ ]]; then
+                echo "ERROR: Wiki.js returned a non-numeric folder id ('$parent_id') for '$seg'." >&2
+                exit 1
+              fi
+            done
+
+            echo "$parent_id"
+          }
+
           parent_id="$(normalize_parent_id "$PARENT_FOLDER_ID")"
           echo "Using parent folder id $parent_id."
+
+          base_path="${BASE_PATH%/}"
+          if [ -n "$base_path" ]; then
+            echo "Ensuring base path '$base_path' exists under parent $parent_id"
+            parent_id="$(ensure_folder_path "$parent_id" "$base_path")"
+            echo "Base path resolved to folder id $parent_id"
+          fi
+
+          folder_slug="$REPO_NAME"
+          folder_name="${REPO_NAME_DISPLAY:-$REPO_NAME}"
+          folder_name_norm="$(normalize_case "$folder_name")"
+          folder_slug_norm="$(normalize_case "$folder_slug")"
 
           QUERY=$(build_folders_query "$parent_id")
           JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
@@ -740,14 +912,32 @@ jobs:
             exit 1
           fi
 
-          FOLDER_ID=$(echo "$RESULT" | jq -r --arg NAME "$REPO_NAME" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
+          FOLDER_ID=$(echo "$RESULT" | jq -r \
+            --arg slug "$folder_slug" \
+            --arg slug_norm "$folder_slug_norm" \
+            --arg name "$folder_name" \
+            --arg name_norm "$folder_name_norm" '
+              .data.assets.folders[]? |
+              select(
+                (.slug // "") == $slug or
+                (.slug // "") == $name or
+                (.slug // "" | ascii_downcase) == ($slug | ascii_downcase) or
+                (.slug // "" | ascii_downcase) == ($slug_norm | ascii_downcase) or
+                (.name // "") == $name or
+                (.name // "" | ascii_downcase) == ($slug | ascii_downcase) or
+                (.name // "" | ascii_downcase) == ($slug_norm | ascii_downcase) or
+                (.name // "" | ascii_downcase) == ($name | ascii_downcase) or
+                (.name // "" | ascii_downcase) == ($name_norm | ascii_downcase)
+              ) |
+              .id
+            ' || true)
 
           if [ -n "$FOLDER_ID" ] && [ "$FOLDER_ID" != "null" ]; then
             echo "Folder already exists with ID $FOLDER_ID"
           else
             echo "Folder not found, creating under parent $parent_id..."
 
-            MUTATION=$(build_create_mutation "$parent_id" "$REPO_NAME" "$REPO_NAME")
+            MUTATION=$(build_create_mutation "$parent_id" "$folder_slug" "$folder_name")
             JSON_MUT=$(jq -n --arg q "$MUTATION" '{ query: $q }')
 
             RESULT_MUT=$(curl -s -X POST "$GRAPHQL_URL" \
@@ -778,7 +968,25 @@ jobs:
               --data "$JSON")
 
             if echo "$RESULT_AFTER" | jq . >/dev/null 2>&1; then
-              FOLDER_ID=$(echo "$RESULT_AFTER" | jq -r --arg NAME "$REPO_NAME" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
+              FOLDER_ID=$(echo "$RESULT_AFTER" | jq -r \
+                --arg slug "$folder_slug" \
+                --arg slug_norm "$folder_slug_norm" \
+                --arg name "$folder_name" \
+                --arg name_norm "$folder_name_norm" '
+                  .data.assets.folders[]? |
+                  select(
+                    (.slug // "") == $slug or
+                    (.slug // "") == $name or
+                    (.slug // "" | ascii_downcase) == ($slug | ascii_downcase) or
+                    (.slug // "" | ascii_downcase) == ($slug_norm | ascii_downcase) or
+                    (.name // "") == $name or
+                    (.name // "" | ascii_downcase) == ($slug | ascii_downcase) or
+                    (.name // "" | ascii_downcase) == ($slug_norm | ascii_downcase) or
+                    (.name // "" | ascii_downcase) == ($name | ascii_downcase) or
+                    (.name // "" | ascii_downcase) == ($name_norm | ascii_downcase)
+                  ) |
+                  .id
+                ' || true)
             else
               echo "ERROR: Non-JSON response when re-listing folders after creation:"
               echo "$RESULT_AFTER"
@@ -829,7 +1037,7 @@ jobs:
             fi
 
             jq -nr --argjson parent "$parent" '
-              "query { assets { folders(parentFolderId: " + ($parent|tostring) + ") { id name } } }"
+              "query { assets { folders(parentFolderId: " + ($parent|tostring) + ") { id name slug } } }"
             '
           }
 
@@ -847,6 +1055,25 @@ jobs:
             '
           }
 
+          normalize_case() {
+            local input="$1"
+            local norm
+            norm=$(printf '%s' "$input" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || printf '%s' "$input")
+            norm=$(printf '%s' "$norm" | tr '[:upper:]' '[:lower:]')
+            printf '%s' "$norm"
+          }
+
+          slugify() {
+            local input="$1"
+            local norm
+            norm=$(normalize_case "$input")
+            norm=$(printf '%s' "$norm" | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
+            if [ -z "$norm" ]; then
+              norm="folder"
+            fi
+            printf '%s' "$norm"
+          }
+
           ensure_folder_path() {
             local parent_id="$1"
             local path="$2"
@@ -861,6 +1088,9 @@ jobs:
             read -r -a parts <<< "$path"
             for seg in "${parts[@]}"; do
               [ -z "$seg" ] && continue
+              local seg_norm seg_slug
+              seg_norm="$(normalize_case "$seg")"
+              seg_slug="$(slugify "$seg")"
 
               QUERY=$(build_folders_query "$parent_id")
               JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
@@ -876,7 +1106,21 @@ jobs:
                 exit 1
               fi
 
-              CHILD_ID=$(echo "$RESULT" | jq -r --arg NAME "$seg" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
+              CHILD_ID=$(echo "$RESULT" | jq -r \
+                --arg NAME "$seg" \
+                --arg NAME_NORM "$seg_norm" \
+                --arg SLUG "$seg_slug" '
+                .data.assets.folders[]? |
+                select(
+                  (.name // "") == $NAME or
+                  (.name // "" | ascii_downcase) == ($NAME | ascii_downcase) or
+                  (.name // "" | ascii_downcase) == ($NAME_NORM | ascii_downcase) or
+                  (.slug // "") == $NAME or
+                  (.slug // "" | ascii_downcase) == ($NAME | ascii_downcase) or
+                  (.slug // "" | ascii_downcase) == ($SLUG | ascii_downcase)
+                ) |
+                .id
+              ' || true)
 
               if [ -n "$CHILD_ID" ] && [ "$CHILD_ID" != "null" ]; then
                 echo "Found folder '$seg' (id: $CHILD_ID) under parent $parent_id"
@@ -890,7 +1134,7 @@ jobs:
 
               echo "Creating folder '$seg' under parent $parent_id"
 
-              MUTATION=$(build_create_mutation "$parent_id" "$seg" "$seg")
+              MUTATION=$(build_create_mutation "$parent_id" "$seg_slug" "$seg")
               JSON_MUT=$(jq -n --arg q "$MUTATION" '{ query: $q }')
 
               RESULT_MUT=$(curl -s -X POST "$GRAPHQL_URL" \
@@ -921,7 +1165,21 @@ jobs:
                 --data "$JSON")
 
               if echo "$RESULT2" | jq . >/dev/null 2>&1; then
-                CHILD_ID=$(echo "$RESULT2" | jq -r --arg NAME "$seg" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
+                CHILD_ID=$(echo "$RESULT2" | jq -r \
+                  --arg NAME "$seg" \
+                  --arg NAME_NORM "$seg_norm" \
+                  --arg SLUG "$seg_slug" '
+                  .data.assets.folders[]? |
+                  select(
+                    (.name // "") == $NAME or
+                    (.name // "" | ascii_downcase) == ($NAME | ascii_downcase) or
+                    (.name // "" | ascii_downcase) == ($NAME_NORM | ascii_downcase) or
+                    (.slug // "") == $NAME or
+                    (.slug // "" | ascii_downcase) == ($NAME | ascii_downcase) or
+                    (.slug // "" | ascii_downcase) == ($SLUG | ascii_downcase)
+                  ) |
+                  .id
+                ' || true)
               else
                 echo "WARNING: Non-JSON response when re-listing children of $parent_id:"
                 echo "$RESULT2"
