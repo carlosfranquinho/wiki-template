@@ -774,6 +774,9 @@ jobs:
                 -H "Content-Type: application/json" \
                 --data "$JSON")
 
+              echo "Pasta(s) devolvidas:"
+              echo "$RESULT" | jq '.data.assets.folders[] | {id, name, slug}'
+
               if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
                 echo "ERROR: Non-JSON response when listing folders (parent $parent_id):"
                 echo "$RESULT"
@@ -887,7 +890,7 @@ jobs:
           base_path="${BASE_PATH%/}"
           if [ -n "$base_path" ]; then
             echo "Ensuring base path '$base_path' exists under parent $parent_id"
-            parent_id="$(ensure_folder_path "$parent_id" "$base_path" "false")"
+            parent_id="$(ensure_folder_path "$parent_id" "$base_path" "true")"
             echo "Base path resolved to folder id $parent_id"
           fi
 
@@ -1103,6 +1106,7 @@ jobs:
                 -H "Authorization: Bearer $WIKI_API_TOKEN" \
                 -H "Content-Type: application/json" \
                 --data "$JSON")
+
 
               if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
                 echo "ERROR: Non-JSON response when listing folders (parent $parent_id):"
