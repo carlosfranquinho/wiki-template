@@ -106,8 +106,10 @@ jobs:
           set -euo pipefail
 
           # Definir Paths
-          BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/.-]/_/g')
-          REPO_PATH="${BASE_PATH}/${REPO_NAME}"
+          BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/_-]/_/g')
+          BASE_PATH_SAFE=$(echo "$BASE_PATH_SAFE" | sed 's#//*#/#g')
+          REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}/"
+
           DOC_PREFIX="${REPO_PATH}documentation/"
 
           echo "🔍 Verificações:"
@@ -213,7 +215,10 @@ jobs:
 
       - name: Create Documentation Missing Files
         run: |
-          REPO_PATH="${BASE_PATH}/${REPO_NAME}/"
+          BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/_-]/_/g')
+          BASE_PATH_SAFE=$(echo "$BASE_PATH_SAFE" | sed 's#//*#/#g')
+          REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}/"
+
           DOC_PREFIX="${REPO_PATH}documentation/"
 
           # Read missing files from output
@@ -296,14 +301,38 @@ jobs:
       
       - name: Create README Page in Wiki.js
         run: |
-          REPO_PATH="${BASE_PATH}/${REPO_NAME}"
-          README_PATH="${REPO_PATH}/readme"
           set -euo pipefail
 
-          # Ler e normalizar CRLF
+          # ------------------------------------------------------------
+          # 1️⃣ Normalizar o BASE_PATH (remover acentos / caracteres ilegais)
+          # ------------------------------------------------------------
+          BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/_-]/_/g')
+          BASE_PATH_SAFE=$(echo "$BASE_PATH_SAFE" | sed 's#//*#/#g')
+
+          # ------------------------------------------------------------
+          # 2️⃣ Construir o caminho REPO_PATH de forma segura
+          # ------------------------------------------------------------
+          REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
+          REPO_PATH=$(echo "$REPO_PATH" | sed 's#//*#/#g')
+
+          README_PATH="${REPO_PATH}/readme"
+
+          echo "📂 BASE_PATH_SAFE: ${BASE_PATH_SAFE}"
+          echo "📄 REPO_PATH: ${REPO_PATH}"
+          echo "📘 README_PATH: ${README_PATH}"
+
+          # ------------------------------------------------------------
+          # 3️⃣ Ler o conteúdo do README.md (sem CRLF)
+          # ------------------------------------------------------------
+          if [ ! -f README.md ]; then
+            echo "❌ README.md não encontrado no repositório."
+            exit 1
+          fi
           CONTENT=$(tr -d '\r' < README.md)
 
-          # Reescrever links
+          # ------------------------------------------------------------
+          # 4️⃣ Reescrever links relativos (para documentação local)
+          # ------------------------------------------------------------
           CONTENT=$(
             printf '%s\n' "$CONTENT" | sed -E \
               -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
@@ -311,37 +340,58 @@ jobs:
               -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md([?#][^)]*)\)#](./documentation/\1\2)#g' \
               -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
           )
-          
-          QUERY='mutation ($content: String!, $locale: String!, $path: String!) { pages { create(path: $path, title: "README", content: $content, editor: "markdown", isPrivate: false, isPublished: true, locale: $locale, tags: [], description: "") { responseResult { succeeded slug message } page { id title path updatedAt } } } }'
-          
+
+          # ------------------------------------------------------------
+          # 5️⃣ Construir query GraphQL
+          # ------------------------------------------------------------
+          QUERY='mutation ($content: String!, $locale: String!, $path: String!) {
+            pages {
+              create(
+                path: $path,
+                title: "README",
+                content: $content,
+                editor: "markdown",
+                isPrivate: false,
+                isPublished: true,
+                locale: $locale,
+                tags: [],
+                description: ""
+              ) {
+                responseResult { succeeded slug message }
+                page { id title path updatedAt }
+              }
+            }
+          }'
+
           JSON_PAYLOAD=$(jq -n \
             --arg q "$QUERY" \
             --arg content "$CONTENT" \
             --arg loc "$WIKI_LOCALE" \
             --arg path "$README_PATH" \
-            '{query: $q, variables: { content: $content, locale: $loc, path: $path }}')
-          
+            '{ query: $q, variables: { content: $content, locale: $loc, path: $path } }')
+
+          # ------------------------------------------------------------
+          # 6️⃣ Enviar para Wiki.js
+          # ------------------------------------------------------------
+          echo "🚀 Enviando para Wiki.js..."
           RESULT=$(curl -s -X POST "$WIKI_URL" \
             -H "Authorization: Bearer $WIKI_API_TOKEN" \
             -H "Content-Type: application/json" \
             --data "$JSON_PAYLOAD")
-          
+
           echo "$RESULT" | jq .
 
           SUCCEEDED=$(echo "$RESULT" | jq -r '.data.pages.create.responseResult.succeeded // empty')
           if [ "$SUCCEEDED" = "true" ]; then
-            echo "✅ Created: $README_PATH"
             PAGE_ID=$(echo "$RESULT" | jq -r .data.pages.create.page.id)
-            echo "Page ID: $PAGE_ID"
-
-            echo "Saving WIKI_README_ID=$PAGE_ID to repository variables…"
-
-            #gh variable set "WIKI_README_ID" --body "$PAGE_ID"
+            echo "✅ Página criada com sucesso!"
+            echo "🆔 Page ID: $PAGE_ID"
           else
-            echo "⚠️ Failed to create: $README_PATH"
-            echo "$RESULT" | jq .errors
+            echo "⚠️ Falha ao criar página README"
+            echo "$RESULT" | jq -r '.data.pages.create.responseResult.message'
             exit 1
           fi
+
   
   create-changelog-page:
     name: "Create CHANGELOG Page if missing"
@@ -354,45 +404,85 @@ jobs:
 
       - name: Create CHANGELOG Page in Wiki.js
         run: |
-          REPO_PATH="${BASE_PATH}/${REPO_NAME}"
+          set -euo pipefail
+
+          # ------------------------------------------------------------
+          # 1️⃣ Normalizar BASE_PATH (remover acentos e caracteres ilegais)
+          # ------------------------------------------------------------
+          BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/_-]/_/g')
+          BASE_PATH_SAFE=$(echo "$BASE_PATH_SAFE" | sed 's#//*#/#g')
+
+          # ------------------------------------------------------------
+          # 2️⃣ Construir caminho REPO_PATH e CHANGELOG_PATH
+          # ------------------------------------------------------------
+          REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
+          REPO_PATH=$(echo "$REPO_PATH" | sed 's#//*#/#g')
+
           CHANGELOG_PATH="${REPO_PATH}/changelog"
-          echo "Creating CHANGELOG page at path: ${CHANGELOG_PATH}"
+          echo "📄 CHANGELOG_PATH: ${CHANGELOG_PATH}"
 
-          CONTENT=$(<CHANGELOG.md)
-          echo "✅ CHANGELOG content loaded."
-          echo "${CONTENT}"
+          # ------------------------------------------------------------
+          # 3️⃣ Ler o conteúdo do ficheiro CHANGELOG.md
+          # ------------------------------------------------------------
+          if [ ! -f CHANGELOG.md ]; then
+            echo "❌ Ficheiro CHANGELOG.md não encontrado no repositório."
+            exit 1
+          fi
 
-          # Build GraphQL query in a variable (no expansion inside)
-          QUERY='mutation ($content: String!, $locale: String!, $path: String!) { pages { create(path: $path, title: "CHANGELOG", content: $content, editor: "markdown", isPrivate: false, isPublished: true, locale: $locale, tags: [], description: "All notable changes to this project will be documented in this file.") { responseResult { succeeded slug message } page { id title path updatedAt } } } }'
+          CONTENT=$(tr -d '\r' < CHANGELOG.md)
+          echo "✅ Conteúdo do CHANGELOG carregado."
 
-          # Build payload: pass the query + variables; jq escapes values safely
+          # ------------------------------------------------------------
+          # 4️⃣ Construir query GraphQL
+          # ------------------------------------------------------------
+          QUERY='mutation ($content: String!, $locale: String!, $path: String!) {
+            pages {
+              create(
+                path: $path,
+                title: "CHANGELOG",
+                content: $content,
+                editor: "markdown",
+                isPrivate: false,
+                isPublished: true,
+                locale: $locale,
+                tags: [],
+                description: "All notable changes to this project will be documented in this file."
+              ) {
+                responseResult { succeeded slug message }
+                page { id title path updatedAt }
+              }
+            }
+          }'
+
           JSON_PAYLOAD=$(jq -n \
             --arg q "$QUERY" \
             --arg content "$CONTENT" \
             --arg loc "$WIKI_LOCALE" \
             --arg path "$CHANGELOG_PATH" \
-            '{query: $q, variables: { content: $content, locale: $loc, path: $path }}')
+            '{ query: $q, variables: { content: $content, locale: $loc, path: $path } }')
 
+          # ------------------------------------------------------------
+          # 5️⃣ Enviar para Wiki.js
+          # ------------------------------------------------------------
+          echo "🚀 Criando página CHANGELOG..."
           RESULT=$(curl -s -X POST "$WIKI_URL" \
             -H "Authorization: Bearer $WIKI_API_TOKEN" \
             -H "Content-Type: application/json" \
             --data "$JSON_PAYLOAD")
-          
+
           echo "$RESULT" | jq .
+
           SUCCEEDED=$(echo "$RESULT" | jq -r '.data.pages.create.responseResult.succeeded // empty')
           if [ "$SUCCEEDED" = "true" ]; then
-            echo "✅ Created: $CHANGELOG_PATH"
             PAGE_ID=$(echo "$RESULT" | jq -r .data.pages.create.page.id)
-            echo "Page ID: $PAGE_ID"
-
-            echo "Saving WIKI_CHANGELOG_ID=$PAGE_ID to repository variables…"
-
-            #gh variable set "WIKI_CHANGELOG_ID" --body "$PAGE_ID"
+            echo "✅ Página CHANGELOG criada com sucesso!"
+            echo "🆔 Page ID: $PAGE_ID"
           else
-            echo "⚠️ Failed to create: $CHANGELOG_PATH"
-            echo "$RESULT" | jq .errors
+            echo "⚠️ Falha ao criar página CHANGELOG"
+            echo "$RESULT" | jq -r '.data.pages.create.responseResult.message'
             exit 1
           fi
+
 
 # Updates de Páginas
   update-docs-content:
@@ -597,7 +687,9 @@ jobs:
         env:
           WIKI_CHANGELOG_ID: ${{ vars.WIKI_CHANGELOG_ID }}
         run: |
-          REPO_PATH="${BASE_PATH}/${REPO_NAME}"
+          BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/_-]/_/g')
+          BASE_PATH_SAFE=$(echo "$BASE_PATH_SAFE" | sed 's#//*#/#g')
+          REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
           CHANGELOG_PATH="${REPO_PATH}/changelog"
           echo "Updating CHANGELOG page at path: ${CHANGELOG_PATH}"
 
@@ -640,622 +732,103 @@ jobs:
 # Upload de Mídia
   upload-docs-media:
     name: "Upload Documentation Media"
-    runs-on: ubuntu-latest
-    env:
-      PARENT_FOLDER_ID: "1"
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Detect Media Files
-        id: detect
+      - name: "List Media Files in documentation/ (non-md files)"
         run: |
-          # build newline-separated list containing README.md, CHANGELOG.md (if exist) and all files under documentation/
-          MEDIA_FILES=""
-          [ -f README.md ] && MEDIA_FILES="$(printf "%s\n" "README.md")"
-          [ -f CHANGELOG.md ] && MEDIA_FILES="$(printf "%s\n%s" "$MEDIA_FILES" "CHANGELOG.md")"
-          if [ -d documentation ]; then
-            while IFS= read -r -d '' f; do
-              MEDIA_FILES="$(printf "%s\n%s" "$MEDIA_FILES" "$f")"
-            done < <(find documentation/ -type f -print0)
-          fi
-          # remove empty lines and duplicates
-          MEDIA_FILES="$(echo "$MEDIA_FILES" | sed '/^$/d' | awk '!seen[$0]++')"
-          echo "MEDIA_FILES<<EOF" >> $GITHUB_ENV
-          echo "$MEDIA_FILES" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-          echo "Ficheiros encontrados:"
-          echo "$MEDIA_FILES"
+          MEDIA_FILES=$(find documentation/ -type f ! -name "*.md")
+          MEDIA_FILES=($MEDIA_FILES)  # Convert to array
+          echo "Media files found for upload: ${MEDIA_FILES[*]}"
+          echo "MEDIA_FILES=${MEDIA_FILES[*]}" >> "$GITHUB_ENV"
 
-      - name: Get Repository Name
-        id: repo
+      - name: Create Target Folder in Wiki.js
         run: |
-          repo_source="${REPO_NAME:-}"
-          if [ -z "$repo_source" ]; then
-            repo_source="${GITHUB_REPOSITORY##*/}"
-          fi
-          slug_base=$(printf '%s' "$repo_source" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || printf '%s' "$repo_source")
-          slug_base=$(printf '%s' "$slug_base" | tr '[:upper:]' '[:lower:]')
-          repo_slug=$(printf '%s' "$slug_base" | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
-          if [ -z "$repo_slug" ]; then
-            repo_slug="${GITHUB_REPOSITORY##*/}"
-            repo_slug="${repo_slug,,}"
-          fi
-          echo "REPO_NAME=$repo_slug" >> $GITHUB_ENV
-          echo "REPO_NAME_DISPLAY=$repo_source" >> $GITHUB_ENV
-          echo "Repository name (slug): $repo_slug"
+          set -euo pipefail
+          echo "🔧 Preparing Wiki folder structure for media upload..."
 
-      - name: Create folder in Wiki.js (if needed)
-        id: folder
-        run: |
-          if [ -z "$WIKI_API_TOKEN" ]; then
-            echo "ERROR: WIKI_API_TOKEN is not set. Please configure the appropriate secret for Wiki uploads."
-            exit 1
-          fi
+          # ------------------------------------------------------------
+          # 1️⃣ Normalizar BASE_PATH (remover acentos, caracteres ilegais e barras duplicadas)
+          # ------------------------------------------------------------
+          BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/_-]/_/g')
+          BASE_PATH_SAFE=$(echo "$BASE_PATH_SAFE" | sed 's#//*#/#g')
 
-          TRIMMED_URL="${WIKI_URL%/}"
-          if [[ "$TRIMMED_URL" =~ /graphql$ ]]; then
-            GRAPHQL_URL="$TRIMMED_URL"
-          else
-            GRAPHQL_URL="${TRIMMED_URL}/graphql"
-          fi
+          REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
+          REPO_PATH=$(echo "$REPO_PATH" | sed 's#//*#/#g')
 
-          normalize_parent_id() {
-            local raw="$1"
-            if [[ "$raw" =~ ^[0-9]+$ ]]; then
-              echo "$raw"
-              return
-            fi
+          echo "📂 Normalized path: ${REPO_PATH}"
 
-            echo "ERROR: PARENT_FOLDER_ID must be a numeric Wiki.js folder id (received: '${raw}')." >&2
-            exit 1
-          }
+          # ------------------------------------------------------------
+          # 2️⃣ Listar pastas existentes no Wiki.js
+          # ------------------------------------------------------------
+          FOLDER_QUERY='query { assets { folders(parentFolderId: 1) { id name slug } } }'
+          JSON_PAYLOAD=$(jq -n --arg q "$FOLDER_QUERY" '{ query: $q }')
 
-          build_folders_query() {
-            local parent="$1"
-            jq -nr --argjson parent "$parent" '
-              "query { assets { folders(parentFolderId: " + ($parent|tostring) + ") { id name slug } } }"
-            '
-          }
-
-          build_create_mutation() {
-            local parent="$1"
-            local slug_raw="$2"
-            local name_raw="$3"
-            jq -nr --argjson parent "$parent" --arg slug "$slug_raw" --arg name "$name_raw" '
-              "mutation { assets { createFolder(parentFolderId: " + ($parent|tostring) + ", slug: " + ($slug|@json) + ", name: " + ($name|@json) + ") { responseResult { message succeeded } } } }"
-            '
-          }
-
-          normalize_case() {
-            local input="$1"
-            local norm
-            norm=$(printf '%s' "$input" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || printf '%s' "$input")
-            norm=$(printf '%s' "$norm" | tr '[:upper:]' '[:lower:]')
-            printf '%s' "$norm"
-          }
-
-          slugify() {
-            local input="$1"
-            local norm
-            norm=$(normalize_case "$input")
-            norm=$(printf '%s' "$norm" | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
-            if [ -z "$norm" ]; then
-              norm="folder"
-            fi
-            printf '%s' "$norm"
-          }
-
-          ensure_folder_path() {
-            local parent_id="$1"
-            local path="$2"
-            local allow_create="${3:-true}"
-
-            if ! [[ "$parent_id" =~ ^[0-9]+$ ]]; then
-              echo "ERROR: ensure_folder_path requires numeric parent id (received: '$parent_id')." >&2
-              exit 1
-            fi
-
-            [ -z "$path" ] && echo "$parent_id" && return
-
-            local IFS='/'
-            local parts=()
-            local current_path=""
-            read -r -a parts <<< "$path"
-            for seg in "${parts[@]}"; do
-              [ -z "$seg" ] && continue
-              local seg_norm seg_slug
-              seg_norm="$(normalize_case "$seg")"
-              seg_slug="$(slugify "$seg")"
-              current_path="${current_path:+${current_path}/}$seg"
-
-              QUERY=$(build_folders_query "$parent_id")
-              JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
-
-              RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
-                -H "Authorization: Bearer $WIKI_API_TOKEN" \
-                -H "Content-Type: application/json" \
-                --data "$JSON")
-
-              echo "Pasta(s) devolvidas:"
-              echo "$RESULT" | jq '.data.assets.folders[] | {id, name, slug}'
-
-              if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
-                echo "ERROR: Non-JSON response when listing folders (parent $parent_id):"
-                echo "$RESULT"
-                exit 1
-              fi
-
-              CHILD_ID=$(echo "$RESULT" | jq -r \
-                --arg NAME "$seg" \
-                --arg NAME_NORM "$seg_norm" \
-                --arg SLUG "$seg_slug" '
-                .data.assets.folders[]? |
-                select(
-                  (.name // "") == $NAME or
-                  (.name // "" | ascii_downcase) == ($NAME | ascii_downcase) or
-                  (.name // "" | ascii_downcase) == ($NAME_NORM | ascii_downcase) or
-                  (.slug // "") == $NAME or
-                  (.slug // "" | ascii_downcase) == ($NAME | ascii_downcase) or
-                  (.slug // "" | ascii_downcase) == ($SLUG | ascii_downcase)
-                ) |
-                .id
-              ' || true)
-
-              if [ -n "$CHILD_ID" ] && [ "$CHILD_ID" != "null" ]; then
-                echo "Found existing folder '$seg' (id: $CHILD_ID) under parent $parent_id"
-                parent_id="$CHILD_ID"
-                if ! [[ "$parent_id" =~ ^[0-9]+$ ]]; then
-                  echo "ERROR: Wiki.js returned a non-numeric folder id ('$parent_id') for '$seg'." >&2
-                  exit 1
-                fi
-                continue
-              fi
-
-              if [ "$allow_create" != "true" ]; then
-                echo "ERROR: Required folder segment '$current_path' was not found under parent id $1. Create it manually or adjust BASE_PATH."
-                exit 1
-              fi
-
-              echo "Creating missing folder '$seg' under parent $parent_id"
-
-              MUTATION=$(build_create_mutation "$parent_id" "$seg_slug" "$seg")
-              JSON_MUT=$(jq -n --arg q "$MUTATION" '{ query: $q }')
-
-              RESULT_MUT=$(curl -s -X POST "$GRAPHQL_URL" \
-                -H "Authorization: Bearer $WIKI_API_TOKEN" \
-                -H "Content-Type: application/json" \
-                --data "$JSON_MUT")
-
-              if ! echo "$RESULT_MUT" | jq . >/dev/null 2>&1; then
-                echo "ERROR: Non-JSON response when creating folder '$seg' under parent $parent_id:"
-                echo "$RESULT_MUT"
-                exit 1
-              fi
-
-              HAS_ERRORS=$(echo "$RESULT_MUT" | jq -e '.errors? != null' >/dev/null 2>&1; echo $?)
-              SUCCEEDED=$(echo "$RESULT_MUT" | jq -r '.data.assets.createFolder.responseResult.succeeded // empty' 2>/dev/null || true)
-              MESSAGE=$(echo "$RESULT_MUT" | jq -r '.data.assets.createFolder.responseResult.message // empty' 2>/dev/null || true)
-
-              if [ "$HAS_ERRORS" -eq 0 ] || [ "$SUCCEEDED" != "true" ]; then
-                echo "Creation of '$seg' under parent $parent_id failed: $MESSAGE"
-                echo "Full response:"
-                echo "$RESULT_MUT"
-                exit 1
-              fi
-
-              RESULT2=$(curl -s -X POST "$GRAPHQL_URL" \
-                -H "Authorization: Bearer $WIKI_API_TOKEN" \
-                -H "Content-Type: application/json" \
-                --data "$JSON")
-
-              if echo "$RESULT2" | jq . >/dev/null 2>&1; then
-                CHILD_ID=$(echo "$RESULT2" | jq -r \
-                  --arg NAME "$seg" \
-                  --arg NAME_NORM "$seg_norm" \
-                  --arg SLUG "$seg_slug" '
-                  .data.assets.folders[]? |
-                  select(
-                    (.name // "") == $NAME or
-                    (.name // "" | ascii_downcase) == ($NAME | ascii_downcase) or
-                    (.name // "" | ascii_downcase) == ($NAME_NORM | ascii_downcase) or
-                    (.slug // "") == $NAME or
-                    (.slug // "" | ascii_downcase) == ($NAME | ascii_downcase) or
-                    (.slug // "" | ascii_downcase) == ($SLUG | ascii_downcase)
-                  ) |
-                  .id
-                ' || true)
-              else
-                echo "WARNING: Non-JSON response when re-listing children of $parent_id:"
-                echo "$RESULT2"
-              fi
-
-              if [ -z "$CHILD_ID" ] || [ "$CHILD_ID" = "null" ]; then
-                echo "ERROR: Could not create/find folder '$seg' under parent $parent_id."
-                echo "$RESULT_MUT"
-                exit 1
-              fi
-
-              echo "Created folder '$seg' (id: $CHILD_ID) under parent $parent_id"
-              parent_id="$CHILD_ID"
-              if ! [[ "$parent_id" =~ ^[0-9]+$ ]]; then
-                echo "ERROR: Wiki.js returned a non-numeric folder id ('$parent_id') for '$seg'." >&2
-                exit 1
-              fi
-            done
-
-            echo "$parent_id"
-          }
-
-          parent_id="$(normalize_parent_id "$PARENT_FOLDER_ID")"
-          echo "Using parent folder id $parent_id."
-
-          base_path="${BASE_PATH%/}"
-          if [ -n "$base_path" ]; then
-            echo "Ensuring base path '$base_path' exists under parent $parent_id"
-            parent_id="$(ensure_folder_path "$parent_id" "$base_path" "true")"
-            echo "Base path resolved to folder id $parent_id"
-          fi
-
-          folder_slug="$REPO_NAME"
-          folder_name="${REPO_NAME_DISPLAY:-$REPO_NAME}"
-          folder_name_norm="$(normalize_case "$folder_name")"
-          folder_slug_norm="$(normalize_case "$folder_slug")"
-
-          QUERY=$(build_folders_query "$parent_id")
-          JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
-
-          RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
+          RESULT=$(curl -sS -X POST "$WIKI_URL" \
             -H "Authorization: Bearer $WIKI_API_TOKEN" \
             -H "Content-Type: application/json" \
-            --data "$JSON")
+            --data "$JSON_PAYLOAD")
 
-          if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
-            echo "ERROR: Non-JSON response when querying folders:"
-            echo "$RESULT"
-            exit 1
-          fi
+          echo "📋 Existing folders under parent 1:"
+          echo "$RESULT" | jq '.data.assets.folders[] | {id, name, slug}'
 
-          FOLDER_ID=$(echo "$RESULT" | jq -r \
-            --arg slug "$folder_slug" \
-            --arg slug_norm "$folder_slug_norm" \
-            --arg name "$folder_name" \
-            --arg name_norm "$folder_name_norm" '
-              .data.assets.folders[]? |
-              select(
-                (.slug // "") == $slug or
-                (.slug // "") == $name or
-                (.slug // "" | ascii_downcase) == ($slug | ascii_downcase) or
-                (.slug // "" | ascii_downcase) == ($slug_norm | ascii_downcase) or
-                (.name // "") == $name or
-                (.name // "" | ascii_downcase) == ($slug | ascii_downcase) or
-                (.name // "" | ascii_downcase) == ($slug_norm | ascii_downcase) or
-                (.name // "" | ascii_downcase) == ($name | ascii_downcase) or
-                (.name // "" | ascii_downcase) == ($name_norm | ascii_downcase)
-              ) |
-              .id
-            ' || true)
+          # ------------------------------------------------------------
+          # 3️⃣ Verificar (ou criar) a pasta principal do repositório
+          # ------------------------------------------------------------
+          repo_name="${REPO_NAME,,}"
+          repo_slug=$(echo "$repo_name" | sed 's/[^a-z0-9_-]/_/g')
 
-          if [ -n "$FOLDER_ID" ] && [ "$FOLDER_ID" != "null" ]; then
-            echo "Folder already exists with ID $FOLDER_ID"
-          else
-            echo "Folder not found, creating under parent $parent_id..."
+          echo "🔎 Checking for folder: $repo_slug"
 
-            MUTATION=$(build_create_mutation "$parent_id" "$folder_slug" "$folder_name")
-            JSON_MUT=$(jq -n --arg q "$MUTATION" '{ query: $q }')
+          FOLDER_ID=$(echo "$RESULT" | jq -r --arg SLUG "$repo_slug" '.data.assets.folders[] | select(.slug == $SLUG or .name == $SLUG) | .id')
 
-            RESULT_MUT=$(curl -s -X POST "$GRAPHQL_URL" \
+          if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
+            echo "📁 Folder not found. Creating folder '${repo_slug}'..."
+            
+            MUTATION=$(cat <<GRAPHQL
+            mutation {
+              assets {
+                createFolder(parentFolderId: 1, slug: "${repo_slug}", name: "${repo_name}") {
+                  responseResult { succeeded message }
+                  folder { id name slug }
+                }
+              }
+            }
+          GRAPHQL
+          )
+            JSON_PAYLOAD=$(jq -n --arg q "$MUTATION" '{ query: $q }')
+
+            RESULT=$(curl -sS -X POST "$WIKI_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -H "Content-Type: application/json" \
-              --data "$JSON_MUT")
+              --data "$JSON_PAYLOAD")
 
-            if ! echo "$RESULT_MUT" | jq . >/dev/null 2>&1; then
-              echo "ERROR: Non-JSON response when creating folder:"
-              echo "$RESULT_MUT"
-              exit 1
-            fi
+            echo "$RESULT" | jq .
 
-            HAS_ERRORS=$(echo "$RESULT_MUT" | jq -e '.errors? != null' >/dev/null 2>&1; echo $?)
-            SUCCEEDED=$(echo "$RESULT_MUT" | jq -r '.data.assets.createFolder.responseResult.succeeded // empty' 2>/dev/null || true)
-            MESSAGE=$(echo "$RESULT_MUT" | jq -r '.data.assets.createFolder.responseResult.message // empty' 2>/dev/null || true)
-
-            if [ "$HAS_ERRORS" -eq 0 ] || [ "$SUCCEEDED" != "true" ]; then
-              echo "Creation reported failure: $MESSAGE"
-              echo "Full response:"
-              echo "$RESULT_MUT"
-              exit 1
-            fi
-
-            RESULT_AFTER=$(curl -s -X POST "$GRAPHQL_URL" \
-              -H "Authorization: Bearer $WIKI_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data "$JSON")
-
-            if echo "$RESULT_AFTER" | jq . >/dev/null 2>&1; then
-              FOLDER_ID=$(echo "$RESULT_AFTER" | jq -r \
-                --arg slug "$folder_slug" \
-                --arg slug_norm "$folder_slug_norm" \
-                --arg name "$folder_name" \
-                --arg name_norm "$folder_name_norm" '
-                  .data.assets.folders[]? |
-                  select(
-                    (.slug // "") == $slug or
-                    (.slug // "") == $name or
-                    (.slug // "" | ascii_downcase) == ($slug | ascii_downcase) or
-                    (.slug // "" | ascii_downcase) == ($slug_norm | ascii_downcase) or
-                    (.name // "") == $name or
-                    (.name // "" | ascii_downcase) == ($slug | ascii_downcase) or
-                    (.name // "" | ascii_downcase) == ($slug_norm | ascii_downcase) or
-                    (.name // "" | ascii_downcase) == ($name | ascii_downcase) or
-                    (.name // "" | ascii_downcase) == ($name_norm | ascii_downcase)
-                  ) |
-                  .id
-                ' || true)
-            else
-              echo "ERROR: Non-JSON response when re-listing folders after creation:"
-              echo "$RESULT_AFTER"
-              exit 1
-            fi
-
+            FOLDER_ID=$(echo "$RESULT" | jq -r '.data.assets.createFolder.folder.id')
             if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
-              echo "ERROR: Could not obtain a valid folder ID after creation. Creation response:"
-              echo "$RESULT_MUT"
+              echo "❌ Failed to create target folder '${repo_slug}'."
+              echo "$RESULT" | jq .
               exit 1
             fi
-
-            echo "Folder created with ID $FOLDER_ID"
-          fi
-
-          if ! [[ "$FOLDER_ID" =~ ^[0-9]+$ ]]; then
-            echo "ERROR: Wiki.js returned a non-numeric folder id ('$FOLDER_ID')."
-            exit 1
-          fi
-
-          echo "FOLDER_ID=$FOLDER_ID" >> $GITHUB_ENV
-
-
-      - name: Upload Media Files
-        run: |
-          if [ -z "$WIKI_API_TOKEN" ]; then
-            echo "ERROR: WIKI_API_TOKEN is not set. Please configure the appropriate secret for Wiki uploads."
-            exit 1
-          fi
-
-          TRIMMED_URL="${WIKI_URL%/}"
-          if [[ "$TRIMMED_URL" =~ /graphql$ ]]; then
-            GRAPHQL_URL="$TRIMMED_URL"
-            BASE_URL="${TRIMMED_URL%/graphql}"
+            echo "✅ Created new folder '${repo_slug}' with ID: ${FOLDER_ID}"
           else
-            BASE_URL="$TRIMMED_URL"
-            GRAPHQL_URL="${BASE_URL}/graphql"
-          fi
-          UPLOAD_URL="${BASE_URL%/}/u"
-
-          if [ -z "$MEDIA_FILES" ]; then
-            echo "No media files to upload."
-            exit 0
+            echo "✅ Folder '${repo_slug}' already exists with ID: ${FOLDER_ID}"
           fi
 
-          build_folders_query() {
-            local parent="$1"
-            if ! [[ "$parent" =~ ^[0-9]+$ ]]; then
-              echo "ERROR: build_folders_query requires numeric parent id (received: '$parent')." >&2
-              exit 1
-            fi
+          echo "FOLDER_ID=${FOLDER_ID}" >> "$GITHUB_ENV"
 
-            jq -nr --argjson parent "$parent" '
-              "query { assets { folders(parentFolderId: " + ($parent|tostring) + ") { id name slug } } }"
-            '
-          }
+      - name: Start Python Upload Script
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
 
-          build_create_mutation() {
-            local parent="$1"
-            local slug_raw="$2"
-            local name_raw="$3"
-            if ! [[ "$parent" =~ ^[0-9]+$ ]]; then
-              echo "ERROR: build_create_mutation requires numeric parent id (received: '$parent')." >&2
-              exit 1
-            fi
+      - name: Install dependencies
+        run: pip install requests
 
-            jq -nr --argjson parent "$parent" --arg slug "$slug_raw" --arg name "$name_raw" '
-              "mutation { assets { createFolder(parentFolderId: " + ($parent|tostring) + ", slug: " + ($slug|@json) + ", name: " + ($name|@json) + ") { responseResult { message succeeded } } } }"
-            '
-          }
-
-          normalize_case() {
-            local input="$1"
-            local norm
-            norm=$(printf '%s' "$input" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || printf '%s' "$input")
-            norm=$(printf '%s' "$norm" | tr '[:upper:]' '[:lower:]')
-            printf '%s' "$norm"
-          }
-
-          slugify() {
-            local input="$1"
-            local norm
-            norm=$(normalize_case "$input")
-            norm=$(printf '%s' "$norm" | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
-            if [ -z "$norm" ]; then
-              norm="folder"
-            fi
-            printf '%s' "$norm"
-          }
-
-          ensure_folder_path() {
-            local parent_id="$1"
-            local path="$2"
-            local allow_create="${3:-true}"
-
-            if ! [[ "$parent_id" =~ ^[0-9]+$ ]]; then
-              echo "ERROR: ensure_folder_path requires numeric parent id (received: '$parent_id')." >&2
-              exit 1
-            fi
-
-            local IFS='/'
-            local parts=()
-            local current_path=""
-            read -r -a parts <<< "$path"
-            for seg in "${parts[@]}"; do
-              [ -z "$seg" ] && continue
-              local seg_norm seg_slug
-              seg_norm="$(normalize_case "$seg")"
-              seg_slug="$(slugify "$seg")"
-              current_path="${current_path:+${current_path}/}$seg"
-
-              QUERY=$(build_folders_query "$parent_id")
-              JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
-
-              RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
-                -H "Authorization: Bearer $WIKI_API_TOKEN" \
-                -H "Content-Type: application/json" \
-                --data "$JSON")
-
-
-              if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
-                echo "ERROR: Non-JSON response when listing folders (parent $parent_id):"
-                echo "$RESULT"
-                exit 1
-              fi
-
-              CHILD_ID=$(echo "$RESULT" | jq -r \
-                --arg NAME "$seg" \
-                --arg NAME_NORM "$seg_norm" \
-                --arg SLUG "$seg_slug" '
-                .data.assets.folders[]? |
-                select(
-                  (.name // "") == $NAME or
-                  (.name // "" | ascii_downcase) == ($NAME | ascii_downcase) or
-                  (.name // "" | ascii_downcase) == ($NAME_NORM | ascii_downcase) or
-                  (.slug // "") == $NAME or
-                  (.slug // "" | ascii_downcase) == ($NAME | ascii_downcase) or
-                  (.slug // "" | ascii_downcase) == ($SLUG | ascii_downcase)
-                ) |
-                .id
-              ' || true)
-
-              if [ -n "$CHILD_ID" ] && [ "$CHILD_ID" != "null" ]; then
-                echo "Found folder '$seg' (id: $CHILD_ID) under parent $parent_id"
-                parent_id="$CHILD_ID"
-                if ! [[ "$parent_id" =~ ^[0-9]+$ ]]; then
-                  echo "ERROR: Wiki.js returned a non-numeric folder id ('$parent_id') for '$seg'." >&2
-                  exit 1
-                fi
-                continue
-              fi
-
-              if [ "$allow_create" != "true" ]; then
-                echo "ERROR: Required folder segment '$current_path' was not found under parent id $1. Create it manually or adjust the path."
-                exit 1
-              fi
-
-              echo "Creating folder '$seg' under parent $parent_id"
-
-              MUTATION=$(build_create_mutation "$parent_id" "$seg_slug" "$seg")
-              JSON_MUT=$(jq -n --arg q "$MUTATION" '{ query: $q }')
-
-              RESULT_MUT=$(curl -s -X POST "$GRAPHQL_URL" \
-                -H "Authorization: Bearer $WIKI_API_TOKEN" \
-                -H "Content-Type: application/json" \
-                --data "$JSON_MUT")
-
-              if ! echo "$RESULT_MUT" | jq . >/dev/null 2>&1; then
-                echo "ERROR: Non-JSON response when creating folder '$seg' under parent $parent_id:"
-                echo "$RESULT_MUT"
-                exit 1
-              fi
-
-              HAS_ERRORS=$(echo "$RESULT_MUT" | jq -e '.errors? != null' >/dev/null 2>&1; echo $?)
-              SUCCEEDED=$(echo "$RESULT_MUT" | jq -r '.data.assets.createFolder.responseResult.succeeded // empty' 2>/dev/null || true)
-              MESSAGE=$(echo "$RESULT_MUT" | jq -r '.data.assets.createFolder.responseResult.message // empty' 2>/dev/null || true)
-
-              if [ "$HAS_ERRORS" -eq 0 ] || [ "$SUCCEEDED" != "true" ]; then
-                echo "Creation of '$seg' under parent $parent_id failed: $MESSAGE"
-                echo "Full response:"
-                echo "$RESULT_MUT"
-                exit 1
-              fi
-
-              RESULT2=$(curl -s -X POST "$GRAPHQL_URL" \
-                -H "Authorization: Bearer $WIKI_API_TOKEN" \
-                -H "Content-Type: application/json" \
-                --data "$JSON")
-
-              if echo "$RESULT2" | jq . >/dev/null 2>&1; then
-                CHILD_ID=$(echo "$RESULT2" | jq -r \
-                  --arg NAME "$seg" \
-                  --arg NAME_NORM "$seg_norm" \
-                  --arg SLUG "$seg_slug" '
-                  .data.assets.folders[]? |
-                  select(
-                    (.name // "") == $NAME or
-                    (.name // "" | ascii_downcase) == ($NAME | ascii_downcase) or
-                    (.name // "" | ascii_downcase) == ($NAME_NORM | ascii_downcase) or
-                    (.slug // "") == $NAME or
-                    (.slug // "" | ascii_downcase) == ($NAME | ascii_downcase) or
-                    (.slug // "" | ascii_downcase) == ($SLUG | ascii_downcase)
-                  ) |
-                  .id
-                ' || true)
-              else
-                echo "WARNING: Non-JSON response when re-listing children of $parent_id:"
-                echo "$RESULT2"
-              fi
-
-              if [ -z "$CHILD_ID" ] || [ "$CHILD_ID" = "null" ]; then
-                echo "ERROR: Could not create/find folder '$seg' under parent $parent_id."
-                echo "$RESULT_MUT"
-                exit 1
-              fi
-
-              echo "Created folder '$seg' (id: $CHILD_ID) under parent $parent_id"
-              parent_id="$CHILD_ID"
-              if ! [[ "$parent_id" =~ ^[0-9]+$ ]]; then
-                echo "ERROR: Wiki.js returned a non-numeric folder id ('$parent_id') for '$seg'." >&2
-                exit 1
-              fi
-            done
-
-            echo "$parent_id"
-          }
-
-          echo "$MEDIA_FILES" | while IFS= read -r filepath || [ -n "$filepath" ]; do
-            [ -z "$filepath" ] && continue
-            echo "Processing $filepath"
-
-            relpath="${filepath#./}"
-            dirpath="$(dirname "$relpath")"
-
-            target_parent="$FOLDER_ID"
-
-            if [ "$dirpath" != "." ] && [ "$dirpath" != "$relpath" ]; then
-              target_parent="$(ensure_folder_path "$FOLDER_ID" "$dirpath")"
-            fi
-
-            echo "Uploading $filepath to folder id $target_parent"
-
-            RESPONSE_WITH_STATUS=$(curl -s -w "\n%{http_code}" -X POST "$UPLOAD_URL" \
-              -H "Authorization: Bearer $WIKI_API_TOKEN" \
-              -F "mediaUpload={\"folderId\":$target_parent}" \
-              -F "mediaUpload=@$filepath")
-            HTTP_STATUS=$(echo "$RESPONSE_WITH_STATUS" | tail -n1)
-            BODY=$(echo "$RESPONSE_WITH_STATUS" | sed '$d')
-
-            if [[ "$HTTP_STATUS" =~ ^2 ]]; then
-              if echo "$BODY" | jq . >/dev/null 2>&1; then
-                echo "$BODY" | jq .
-              else
-                echo "Upload succeeded (HTTP $HTTP_STATUS) for file: $filepath"
-                echo "$BODY"
-              fi
-            else
-              echo "Upload failed (HTTP $HTTP_STATUS) for file: $filepath"
-              if echo "$BODY" | jq . >/dev/null 2>&1; then
-                echo "$BODY" | jq .
-              else
-                echo "$BODY"
-              fi
-              exit 1
-            fi
-          done
-
-
+      - name: Upload Media Files to Wiki.js
+        working-directory: .github/scripts
+        run: |
+          python upload_media.py
