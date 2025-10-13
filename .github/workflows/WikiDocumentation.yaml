@@ -1,0 +1,1003 @@
+name: WikiDocumentation
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+env:
+  WIKI_URL: "http://wikilab2.internal.ctt.pt/graphql"
+  #WIKI_URL: "http://cyberwiki.internal.ctt.pt/graphql"
+  WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN_WIKILAB2  }}
+  WIKI_LOCALE: "en"
+  BASE_PATH: "Pedro/Aplicações"
+  REPO_NAME: ${{ vars.APP_NAME }}
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+  RUN_NOW: 'false'  # Set to 'true' to force run all jobs
+
+jobs:
+  gate:
+    name: "Gate Job"
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+    steps:
+      - name: Determine if full run is needed
+        id: gate
+        run: |
+          RUN_NOW="${{ env.RUN_NOW }}"
+          echo "RUN_NOW=${RUN_NOW}" >> "$GITHUB_OUTPUT"
+          echo "Checking if the Job should run..."
+          echo "RUN_NOW=${RUN_NOW}"
+  
+  check-altered-files:
+    name: "Check Changed Files"
+    runs-on: ubuntu-latest
+    outputs:
+      docs_changed: ${{ steps.check.outputs.docs_changed }}
+      readme_changed: ${{ steps.check.outputs.readme_changed }}
+      changelog_changed: ${{ steps.check.outputs.changelog_changed }}
+      doc_files_changed: ${{ steps.check.outputs.doc_files_changed }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Get changed files
+        id: changed-files
+        run: |
+            # If github.event.before is empty (e.g., first commit or manual run), fallback to comparing with the previous commit or list all files
+            if [ -z "${{ github.event.before }}" ] || [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+              # If this is the first commit or before is empty, list all tracked files (including added ones)
+              git ls-files > changed_files.txt
+            else
+              git fetch origin ${{ github.event.before }}
+              git diff --name-only ${{ github.event.before }} ${{ github.sha }} > changed_files.txt
+            fi
+            cat changed_files.txt
+            changed_files=$(cat changed_files.txt | tr '\n' ' ')
+            echo "Changed files: $changed_files"
+
+      - name: Check if documentation files changed
+        id: check
+        run: |
+          if grep -qE '^documentation/.*\.md$' changed_files.txt; then
+            echo "Documentation files have changed."
+            echo "docs_changed=true" >> "$GITHUB_OUTPUT"
+            
+            # Get the list of changed documentation files for debugging
+            echo "Changed documentation files:"
+            DOC_FILES_CHANGED=$(grep -E '^documentation/.*\.md$' changed_files.txt)
+            echo "$DOC_FILES_CHANGED"
+            DOC_FILES_CHANGED=($DOC_FILES_CHANGED)
+            echo "DOC_FILES_CHANGED=${DOC_FILES_CHANGED[*]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "No documentation files have changed."
+            echo "docs_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if grep -qE '^README\.md$' changed_files.txt; then
+            echo "README.md has changed."
+            echo "readme_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "README.md has not changed."
+            echo "readme_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if grep -qE '^CHANGELOG\.md$' changed_files.txt; then
+            echo "CHANGELOG.md has changed."
+            echo "changelog_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "CHANGELOG.md has not changed."
+            echo "changelog_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+  
+  check-pages-folders:
+    name: "Check if Pages and Folders are created"
+    runs-on: [self-hosted, Linux, X64]
+    outputs:
+      has_repo_path: ${{ steps.check.outputs.has_repo_path }}
+      has_documentation_folder: ${{ steps.check.outputs.has_documentation_folder }}
+      has_readme_page: ${{ steps.check.outputs.has_readme_page }}
+      has_changelog_page: ${{ steps.check.outputs.has_changelog_page }}
+      repo_path: ${{ steps.check.outputs.repo_path }}
+      missing_files: ${{ steps.check.outputs.missing_files }}
+      docs_files: ${{ steps.check.outputs.docs_files }}
+      missing_count: ${{ steps.check.outputs.missing_count }}
+    
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Query Wiki.js and verify structure
+        id: check
+        run: |
+          set -euo pipefail
+
+          # Definir Paths
+          REPO_PATH="${BASE_PATH}/${REPO_NAME}/"
+          DOC_PREFIX="${REPO_PATH}documentation/"
+
+          echo "🔍 Verificações:"
+          echo "  • REPO_PATH      = $REPO_PATH"
+          echo "  • DOC_PREFIX     = $DOC_PREFIX"
+          echo
+
+          QUERY=$(cat <<'GRAPHQL'
+          query ($locale: String!) {
+            pages {
+              list(locale: $locale) {
+                id
+                path
+                title
+              }
+            }
+          }
+          GRAPHQL
+          )
+
+          JSON_PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" '{query: $q, variables: { locale: $loc }}')
+
+          echo "Querying Wiki.js for all pages..."
+
+          RESULT=$(curl -sS -X POST "$WIKI_URL" \
+            -H "Authorization: Bearer $WIKI_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$JSON_PAYLOAD")
+          
+          echo "$RESULT" | jq .
+
+          # Verrificar se Existem erros no resultado
+          ERR_CNT=$(echo "$RESULT" | jq '.errors | length // 0')
+          if [ "$ERR_CNT" -gt 0 ]; then
+            echo "❌ Erros na consulta:"
+            echo "$RESULT" | jq '.errors'
+            exit 1
+          fi
+
+          # Flags para verificar se os paths existem
+          HAS_REPO_PATH=$(echo "$RESULT" | jq --arg path "$REPO_PATH" '[.data.pages.list[] | select(.path | startswith($path))] | length > 0')
+          HAS_DOCUMENTATION_FOLDER=$(echo "$RESULT" | jq --arg path "$DOC_PREFIX" '[.data.pages.list[] | select(.path | startswith($path))] | length > 0')
+          HAS_README_PAGE=$(echo "$RESULT" | jq --arg path "${REPO_PATH}readme" '[.data.pages.list[] | select(.path == $path)] | length > 0')
+          HAS_CHANGELOG_PAGE=$(echo "$RESULT" | jq --arg path "${REPO_PATH}changelog" '[.data.pages.list[] | select(.path == $path)] | length > 0')
+
+
+          # List all .md files in documentation folder
+          DOC_FILES=$(find documentation -type f -name "*.md" | sed 's#^documentation/##')
+          DOC_FILES=($DOC_FILES)  # Convert to array
+
+          # Remove the Extension from the filenames
+          for i in "${!DOC_FILES[@]}"; do
+            DOC_FILES[$i]=$(basename "${DOC_FILES[$i]}" .md)
+          done
+
+          # Verificar se esses arquivos existem na Wiki
+          MISSING_FILES=()
+          for FILE in "${DOC_FILES[@]}"; do
+            FILE_PATH="${DOC_PREFIX}${FILE}"
+            # echo "  • Checking if $FILE_PATH exists in Wiki..."
+            EXISTS=$(echo "$RESULT" | jq --arg path "$FILE_PATH" '[.data.pages.list[] | select(.path == $path)] | length > 0')
+            if [ "$EXISTS" != "true" ]; then
+              MISSING_FILES+=("$FILE_PATH")
+            fi
+          done
+
+          if [ ${#MISSING_FILES[@]} -gt 0 ]; then
+            echo "  • Missing documentation files in Wiki:"
+            for FILE in "${MISSING_FILES[@]}"; do
+              echo "    - $FILE"
+            done
+          fi
+          echo "✅ Verificações concluídas."
+
+          # Set outputs
+          echo "has_repo_path=$HAS_REPO_PATH" >> $GITHUB_OUTPUT
+          echo "has_documentation_folder=$HAS_DOCUMENTATION_FOLDER" >> $GITHUB_OUTPUT
+          echo "has_readme_page=$HAS_README_PAGE" >> $GITHUB_OUTPUT
+          echo "has_changelog_page=$HAS_CHANGELOG_PAGE" >> $GITHUB_OUTPUT
+          echo "repo_path=$REPO_PATH" >> $GITHUB_OUTPUT
+          echo "missing_files=${MISSING_FILES[*]}" >> $GITHUB_OUTPUT
+          echo "missing_count=${#MISSING_FILES[@]}" >> "$GITHUB_OUTPUT"
+          echo "docs_files=${DOC_FILES[*]}" >> $GITHUB_OUTPUT
+
+          # Echo dos outputs para debug
+          echo "✅ Outputs set:"
+          echo "  • has_repo_path = $HAS_REPO_PATH"
+          echo "  • has_documentation_folder = $HAS_DOCUMENTATION_FOLDER"
+          echo "  • has_readme_page = $HAS_README_PAGE"
+          echo "  • has_changelog_page = $HAS_CHANGELOG_PAGE"
+          echo "  • missing_files = ${MISSING_FILES[*]}"
+          echo "  • docs_files = ${DOC_FILES[*]}"
+
+#Criação de Páginas
+  create-missing-files:
+    name: "Create Missing Documentation Files"
+    runs-on: [self-hosted, Linux, X64]
+    needs: [check-pages-folders, gate]
+    if: fromJSON(needs.check-pages-folders.outputs.missing_count) > 0 && needs.gate.outputs.run == 'true'
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Create Documentation Missing Files
+        env:
+          WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN_WIKILAB2  }}
+          #GH_TOKEN: ${{ secrets.GITHUB_TOKEN  }}
+        run: |
+          REPO_PATH="${BASE_PATH}/${REPO_NAME}/"
+          DOC_PREFIX="${REPO_PATH}documentation/"
+
+          # Read missing files from output
+          missing_files=(${{ needs.check-pages-folders.outputs.missing_files }})
+          echo "Missing files to create: ${missing_files[*]}"
+
+          for FILE in "${missing_files[@]}"; do
+            echo "  • Will create: $FILE"
+            # Define source markdown file
+            src_md="documentation/$(basename "$FILE").md"
+
+            # Read Content from the source markdown file
+            CONTENT=$(<"$src_md")
+
+            # Rewrite links just in case (maybe not needed cause its already at the doc folder)
+            CONTENT=$(
+              printf '%s\n' "$CONTENT" | sed -E \
+                -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
+                -e 's#\]\([[:space:]]*documentation/#](./documentation/#g' \
+                -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md([?#][^)]*)\)#](./documentation/\1\2)#g' \
+                -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
+            )
+            
+            CONTENT_JSON=$(jq -n --arg c "$CONTENT" '$c')
+
+            # Build GraphQL query
+            TITLE="$(basename "$FILE")"
+            echo "    - Title: $TITLE"
+
+            # Build GraphQL query in a variable (no expansion inside)
+            QUERY='mutation ($content: String!, $locale: String!, $path: String!, $title: String!) { pages { create(path: $path, title: $title, content: $content, editor: "markdown", isPrivate: false, isPublished: true, locale: $locale, tags: [], description: "") { responseResult { succeeded slug message } page { id title path updatedAt } } } }'
+
+
+            # Build payload: pass the query + variables; jq escapes values safely
+            JSON_PAYLOAD=$(jq -n \
+              --arg q "$QUERY" \
+              --arg content "$CONTENT" \
+              --arg loc "$WIKI_LOCALE" \
+              --arg path "$FILE" \
+              --arg title "$TITLE" \
+              '{query: $q, variables: { content: $content, locale: $loc, path: $path, title: $title }}')
+
+            RESULT=$(curl -s -X POST "$WIKI_URL" \
+              -H "Authorization: Bearer $WIKI_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "$JSON_PAYLOAD")
+            
+            echo "$RESULT" | jq .
+
+            SUCCEEDED=$(echo "$RESULT" | jq -r '.data.pages.create.responseResult.succeeded // empty')
+            
+            if [ "$SUCCEEDED" = "true" ]; then
+              echo "✅ Created: $FILE"
+              PAGE_ID=$(echo "$RESULT" | jq -r .data.pages.create.page.id)
+              echo "Page ID: $PAGE_ID"
+
+              TITLE_SAFE="${TITLE^^}"
+              TITLE_SAFE="${TITLE_SAFE//[^A-Z0-9_]/_}"
+              VAR_NAME="WIKI_${TITLE_SAFE}_ID"
+
+              echo "Saving $VAR_NAME=$PAGE_ID to repository variables…"
+
+              #gh variable set "$VAR_NAME" --body "$PAGE_ID"
+            else
+              echo "⚠️ Failed to create: $FILE"
+              echo "$RESULT" | jq .errors
+              exit 1
+            fi
+
+          done
+  
+  create-readme-page:
+    name: "Create README Page if missing"
+    runs-on: [self-hosted, Linux, X64]
+    needs: [check-pages-folders, gate]
+    if: needs.check-pages-folders.outputs.has_readme_page == 'false' && needs.gate.outputs.run == 'true'
+    env:
+      WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN_WIKILAB2  }}
+      #GH_TOKEN: ${{ secrets.REPO_TOKEN }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+      
+      - name: Create README Page in Wiki.js
+        run: |
+          set -euo pipefail
+
+          # Ler e normalizar CRLF
+          CONTENT=$(tr -d '\r' < README.md)
+
+          # Reescrever links
+          CONTENT=$(
+            printf '%s\n' "$CONTENT" | sed -E \
+              -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
+              -e 's#\]\([[:space:]]*documentation/#](./documentation/#g' \
+              -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md([?#][^)]*)\)#](./documentation/\1\2)#g' \
+              -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
+          )
+          
+          QUERY='mutation ($content: String!, $locale: String!, $path: String!) { pages { create(path: $path, title: "README", content: $content, editor: "markdown", isPrivate: false, isPublished: true, locale: $locale, tags: [], description: "") { responseResult { succeeded slug message } page { id title path updatedAt } } } }'
+          
+          JSON_PAYLOAD=$(jq -n \
+            --arg q "$QUERY" \
+            --arg content "$CONTENT" \
+            --arg loc "$WIKI_LOCALE" \
+            --arg path "$README_PATH" \
+            '{query: $q, variables: { content: $content, locale: $loc, path: $path }}')
+          
+          RESULT=$(curl -s -X POST "$WIKI_URL" \
+            -H "Authorization: Bearer $WIKI_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$JSON_PAYLOAD")
+          
+          echo "$RESULT" | jq .
+
+          SUCCEEDED=$(echo "$RESULT" | jq -r '.data.pages.create.responseResult.succeeded // empty')
+          if [ "$SUCCEEDED" = "true" ]; then
+            echo "✅ Created: $README_PATH"
+            PAGE_ID=$(echo "$RESULT" | jq -r .data.pages.create.page.id)
+            echo "Page ID: $PAGE_ID"
+
+            echo "Saving WIKI_README_ID=$PAGE_ID to repository variables…"
+
+            #gh variable set "WIKI_README_ID" --body "$PAGE_ID"
+          else
+            echo "⚠️ Failed to create: $README_PATH"
+            echo "$RESULT" | jq .errors
+            exit 1
+          fi
+  
+  create-changelog-page:
+    name: "Create CHANGELOG Page if missing"
+    runs-on: [self-hosted, Linux, X64]
+    needs: [check-pages-folders, create-readme-page]
+    if: needs.check-pages-folders.outputs.has_changelog_page == 'false'
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Create CHANGELOG Page in Wiki.js
+        env:
+          WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN_WIKILAB2  }}
+          #GH_TOKEN: ${{ secrets.REPO_TOKEN }}
+        run: |
+          REPO_PATH="${BASE_PATH}/${REPO_NAME}"
+          CHANGELOG_PATH="${REPO_PATH}/changelog"
+          echo "Creating CHANGELOG page at path: ${CHANGELOG_PATH}"
+
+          CONTENT=$(<CHANGELOG.md)
+          echo "✅ CHANGELOG content loaded."
+          echo "${CONTENT}"
+
+          # Build GraphQL query in a variable (no expansion inside)
+          QUERY='mutation ($content: String!, $locale: String!, $path: String!) { pages { create(path: $path, title: "CHANGELOG", content: $content, editor: "markdown", isPrivate: false, isPublished: true, locale: $locale, tags: [], description: "All notable changes to this project will be documented in this file.") { responseResult { succeeded slug message } page { id title path updatedAt } } } }'
+
+          # Build payload: pass the query + variables; jq escapes values safely
+          JSON_PAYLOAD=$(jq -n \
+            --arg q "$QUERY" \
+            --arg content "$CONTENT" \
+            --arg loc "$WIKI_LOCALE" \
+            --arg path "$CHANGELOG_PATH" \
+            '{query: $q, variables: { content: $content, locale: $loc, path: $path }}')
+
+          RESULT=$(curl -s -X POST "$WIKI_URL" \
+            -H "Authorization: Bearer $WIKI_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$JSON_PAYLOAD")
+          
+          echo "$RESULT" | jq .
+          SUCCEEDED=$(echo "$RESULT" | jq -r '.data.pages.create.responseResult.succeeded // empty')
+          if [ "$SUCCEEDED" = "true" ]; then
+            echo "✅ Created: $CHANGELOG_PATH"
+            PAGE_ID=$(echo "$RESULT" | jq -r .data.pages.create.page.id)
+            echo "Page ID: $PAGE_ID"
+
+            echo "Saving WIKI_CHANGELOG_ID=$PAGE_ID to repository variables…"
+
+            gh variable set "WIKI_CHANGELOG_ID" --body "$PAGE_ID"
+          else
+            echo "⚠️ Failed to create: $CHANGELOG_PATH"
+            echo "$RESULT" | jq .errors
+            exit 1
+          fi
+
+# Updates de Páginas
+  update-docs-content:
+    name: "Update Documentation Files in Wiki"
+    runs-on: [self-hosted, Linux, X64]
+    needs: [check-pages-folders, check-altered-files]
+    if: always()
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Get Page IDs from Repo Variables
+        env:
+          #GH_TOKEN: ${{ secrets.REPO_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+        run: |
+          echo "Fetching repository variables..."
+          VARS_JSON=$(gh api repos/${GITHUB_REPOSITORY}/actions/variables)
+          echo "Repository variables fetched."
+
+          # Send Variables to the env
+          echo "Setting environment variables for WIKI_*_ID:"
+          for VAR in $(echo "$VARS_JSON" | jq -r '.variables[].name' | grep '^WIKI_.*_ID$'); do
+            VALUE=$(echo "$VARS_JSON" | jq -r --arg NAME "$VAR" '.variables[] | select(.name == $NAME) | .value')
+            echo "  - $VAR: $VALUE"
+            echo "$VAR=$VALUE" >> $GITHUB_ENV
+          done
+
+      - name: Update the Files in Wiki
+        env:
+          WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN_WIKILAB2  }}
+        run: |
+          DOC_ROOT="${BASE_PATH}/${REPO_NAME}/documentation/"
+
+          # List all documentation files from the output
+          docs_files=(${{ needs.check-pages-folders.outputs.docs_files }})
+          echo "All documentation files from repository: ${docs_files[*]}"
+
+          # Remove Missing files from the list (they will be created in other step)
+          missing_files=(${{ needs.check-pages-folders.outputs.missing_files }})
+          echo "Removing missing files from update list..."
+          for MISSING in "${missing_files[@]}"; do
+            MISSING_BASENAME="$(basename "$MISSING")"
+            for i in "${!docs_files[@]}"; do
+              if [ "${docs_files[$i]}" = "$MISSING_BASENAME" ]; then
+                unset 'docs_files[i]'
+              fi
+            done
+          done
+          
+          echo "Documentation files after removing missing ones: ${docs_files[*]}"
+
+          # Remove the unchanged files from the list (if any)
+          changed_files=(${{ needs.check-altered-files.outputs.doc_files_changed }})
+          # Remove extension and keep only the basename for each changed file
+          for i in "${!changed_files[@]}"; do
+            changed_files[$i]=$(basename "${changed_files[$i]}" .md)
+          done
+          echo "Keeping only changed files for update: ${changed_files[*]}"
+          for i in "${!docs_files[@]}"; do
+            if [[ ! " ${changed_files[*]} " =~ " ${docs_files[$i]} " ]]; then
+              unset 'docs_files[i]'
+            fi
+          done
+
+          echo "Final list of documentation files to update: ${docs_files[*]}"
+
+          if [ ${#docs_files[@]} -eq 0 ]; then
+            echo "No documentation files to update after filtering. Exiting."
+            exit 0
+          fi
+
+          for FILE in "${docs_files[@]}"; do
+            echo "  • Will update: $FILE"
+            # Define source markdown file
+            src_md="documentation/$(basename "$FILE").md"
+
+            # Read Content from the source markdown file
+            CONTENT=$(<"$src_md")
+
+            # Rewrite links just in case (maybe not needed cause its already at the doc folder)
+            CONTENT=$(
+              printf '%s\n' "$CONTENT" | sed -E \
+                -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
+                -e 's#\]\([[:space:]]*documentation/#](./documentation/#g' \
+                -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md([?#][^)]*)\)#](./documentation/\1\2)#g' \
+                -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
+            )
+
+            CONTENT_JSON=$(jq -n --arg c "$CONTENT" '$c')
+
+            # Build GraphQL query
+            TITLE="$(basename "$FILE")"
+            echo "    - Title: $TITLE"
+
+            TITLE_SAFE="${TITLE^^}"
+            TITLE_SAFE="${TITLE_SAFE//[^A-Z0-9_]/_}"
+            VAR_NAME="WIKI_${TITLE_SAFE}_ID"
+            PAGE_ID="${!VAR_NAME}"
+            echo "    - Page ID: $PAGE_ID"
+
+            if [ -z "$PAGE_ID" ]; then
+              echo "⚠️ Page ID for $TITLE not found in repository variables ($VAR_NAME). Skipping."
+              continue
+            fi
+
+            # Build GraphQL query in a variable (no expansion inside)
+            QUERY='mutation ($id: Int!, $content: String!, $locale: String!) { pages { update(id: $id, content: $content, editor: "markdown", isPrivate: false, isPublished: true, locale: $locale, tags: []) { responseResult { succeeded slug message } page { id title path updatedAt } } } }'
+
+            # Build payload: pass the query + variables; jq escapes values safely
+            JSON_PAYLOAD=$(jq -n \
+              --arg q "$QUERY" \
+              --argjson id $PAGE_ID \
+              --arg content "$CONTENT" \
+              --arg loc "$WIKI_LOCALE" \
+              '{query: $q, variables: { id: $id, content: $content, locale: $loc }}')
+            
+            RESULT=$(curl -s -X POST "$WIKI_URL" \
+              -H "Authorization: Bearer $WIKI_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "$JSON_PAYLOAD")
+            
+            SUCCEEDED=$(echo "$RESULT" | jq -r '.data.pages.update.responseResult.succeeded // empty')
+            if [ "$SUCCEEDED" = "true" ]; then
+              echo "✅ Updated: $FILE"
+            else
+              echo "⚠️ Failed to update: $FILE"
+              echo "$RESULT" | jq .errors
+              exit 1
+            fi
+          done
+
+  update-readme-content:
+    name: "Update ReadMe in Wiki"
+    runs-on: [self-hosted, Linux, X64]
+    needs: [check-pages-folders, check-altered-files]
+    if: needs.check-pages-folders.outputs.has_readme_page == 'true' && needs.check-altered-files.outputs.readme_changed == 'true'
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Update README.md content (read and rewrite links)
+        env:
+          WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN_WIKILAB2  }}
+          WIKI_README_ID: ${{ vars.WIKI_README_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "$WIKI_README_ID" ]; then
+            echo "⚠️ WIKI_README_ID is not set. Exiting."
+            exit 1
+          fi
+
+          # Ler e normalizar CRLF
+          CONTENT=$(tr -d '\r' < README.md)
+
+          # Reescrever links
+          CONTENT=$(
+            printf '%s\n' "$CONTENT" | sed -E \
+              -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
+              -e 's#\]\([[:space:]]*documentation/#](./documentation/#g' \
+              -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md([?#][^)]*)\)#](./documentation/\1\2)#g' \
+              -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
+          )
+          
+          CONTENT_JSON=$(jq -n --arg c "$CONTENT" '$c')
+          echo "✅ Prepared README content."
+
+          QUERY='mutation ($id: Int!, $content: String!, $locale: String!) { pages { update(id: $id, content: $content, editor: "markdown", isPrivate: false, isPublished: true, locale: $locale, tags: []) { responseResult { succeeded slug message } page { id title path updatedAt } } } }'
+
+          JSON_PAYLOAD=$(jq -n \
+            --arg q "$QUERY" \
+            --arg id "$WIKI_README_ID" \
+            --arg content "$CONTENT" \
+            --arg loc "$WIKI_LOCALE" \
+            '{query: $q, variables: { id: ($id | tonumber), content: $content, locale: $loc }}'
+          )
+
+          RESULT=$(curl -s -X POST "$WIKI_URL" \
+            -H "Authorization: Bearer $WIKI_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$JSON_PAYLOAD" | jq)
+
+          echo "$RESULT"
+
+          SUCCEEDED=$(echo "$RESULT" | jq -r '.data.pages.update.responseResult.succeeded // empty')
+
+          if [ "$SUCCEEDED" = "true" ]; then
+            echo "✅ Upload complete."
+          else
+            echo "⚠️ Upload Failed."
+            echo "$RESULT" | jq .errors
+            exit 1
+          fi
+
+  update-changelog-content:
+    name: "Update Changelog in Wiki"
+    runs-on: [self-hosted, Linux, X64]
+    needs: [check-pages-folders, check-altered-files, update-readme-content]
+    if: needs.check-pages-folders.outputs.has_changelog_page == 'true' && needs.check-altered-files.outputs.changelog_changed == 'true'
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Upload Changelog
+        env:
+          WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN_WIKILAB2  }}
+          WIKI_CHANGELOG_ID: ${{ vars.WIKI_CHANGELOG_ID }}
+        run: |
+          REPO_PATH="${BASE_PATH}/${REPO_NAME}"
+          CHANGELOG_PATH="${REPO_PATH}/changelog"
+          echo "Updating CHANGELOG page at path: ${CHANGELOG_PATH}"
+
+          if [ -z "$WIKI_CHANGELOG_ID" ]; then
+            echo "⚠️ WIKI_CHANGELOG_ID is not set. Exiting."
+            exit 1
+          fi
+
+          CONTENT=$(tr -d '\r' < CHANGELOG.md)
+          CONTENT_JSON=$(jq -n --arg c "$CONTENT" '$c')
+
+          # Build GraphQL query in a variable (no expansion inside)
+          QUERY='mutation ($id: Int!, $content: String!, $locale: String!) { pages { update(id: $id, title: "CHANGELOG", content: $content, editor: "markdown", isPrivate: false, isPublished: true, locale: $locale, tags: []) { responseResult { succeeded slug message } page { id title path updatedAt } } } }'
+
+          # Build payload: pass the query + variables; jq escapes values safely
+          JSON_PAYLOAD=$(jq -n \
+            --arg q "$QUERY" \
+            --argjson id "$WIKI_CHANGELOG_ID" \
+            --arg content "$CONTENT" \
+            --arg loc "$WIKI_LOCALE" \
+            '{query: $q, variables: { id: ($id | tonumber), content: $content, locale: $loc }}')
+
+          RESULT=$(curl -s -X POST "$WIKI_URL" \
+            -H "Authorization: Bearer $WIKI_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$JSON_PAYLOAD")
+          
+          echo "$RESULT" | jq .
+
+          SUCCEEDED=$(echo "$RESULT" | jq -r '.data.pages.update.responseResult.succeeded // empty')
+
+          if [ "$SUCCEEDED" = "true" ]; then
+            echo "✅ Updated: $CHANGELOG_PATH"
+          else
+            echo "⚠️ Failed to update: $CHANGELOG_PATH"
+            echo "$RESULT" | jq .errors
+            exit 1
+          fi
+
+# Upload de Mídia
+  upload-docs-media:
+    name: "Upload Documentation Media"
+    needs: [gate]
+    if: needs.gate.outputs.run == 'true'
+    runs-on: [self-hosted, Linux, X64]
+    env:
+      PARENT_FOLDER_ID: "1"
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Detect Media Files
+        id: detect
+        run: |
+          # build newline-separated list containing README.md, CHANGELOG.md (if exist) and all files under documentation/
+          MEDIA_FILES=""
+          [ -f README.md ] && MEDIA_FILES="$(printf "%s\n" "README.md")"
+          [ -f CHANGELOG.md ] && MEDIA_FILES="$(printf "%s\n%s" "$MEDIA_FILES" "CHANGELOG.md")"
+          if [ -d documentation ]; then
+            while IFS= read -r -d '' f; do
+              MEDIA_FILES="$(printf "%s\n%s" "$MEDIA_FILES" "$f")"
+            done < <(find documentation/ -type f -print0)
+          fi
+          # remove empty lines and duplicates
+          MEDIA_FILES="$(echo "$MEDIA_FILES" | sed '/^$/d' | awk '!seen[$0]++')"
+          echo "MEDIA_FILES<<EOF" >> $GITHUB_ENV
+          echo "$MEDIA_FILES" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          echo "Ficheiros encontrados:"
+          echo "$MEDIA_FILES"
+
+      - name: Get Repository Name
+        id: repo
+        run: |
+          repo_name="${GITHUB_REPOSITORY##*/}"
+          echo "REPO_NAME=${repo_name,,}" >> $GITHUB_ENV
+          echo "Repository name: ${repo_name,,}"
+
+      - name: Create folder in Wiki.js (if needed)
+        id: folder
+        env:
+          WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN_WIKILAB2 }}
+        run: |
+          TRIMMED_URL="${WIKI_URL%/}"
+          if [[ "$TRIMMED_URL" =~ /graphql$ ]]; then
+            GRAPHQL_URL="$TRIMMED_URL"
+          else
+            GRAPHQL_URL="${TRIMMED_URL}/graphql"
+          fi
+
+          normalize_parent_id() {
+            local raw="$1"
+            if [[ "$raw" =~ ^[0-9]+$ ]]; then
+              echo "$raw"
+              return
+            fi
+
+            echo "ERROR: PARENT_FOLDER_ID must be a numeric Wiki.js folder id (received: '${raw}')." >&2
+            exit 1
+          }
+
+          build_folders_query() {
+            local parent="$1"
+            jq -nr --argjson parent "$parent" '
+              "query { assets { folders(parentFolderId: " + ($parent|tostring) + ") { id name } } }"
+            '
+          }
+
+          build_create_mutation() {
+            local parent="$1"
+            local slug_raw="$2"
+            local name_raw="$3"
+            jq -nr --argjson parent "$parent" --arg slug "$slug_raw" --arg name "$name_raw" '
+              "mutation { assets { createFolder(parentFolderId: " + ($parent|tostring) + ", slug: " + ($slug|@json) + ", name: " + ($name|@json) + ") { responseResult { message succeeded } } } }"
+            '
+          }
+
+          parent_id="$(normalize_parent_id "$PARENT_FOLDER_ID")"
+          echo "Using parent folder id $parent_id."
+
+          QUERY=$(build_folders_query "$parent_id")
+          JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
+
+          RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
+            -H "Authorization: Bearer $WIKI_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$JSON")
+
+          if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
+            echo "ERROR: Non-JSON response when querying folders:"
+            echo "$RESULT"
+            exit 1
+          fi
+
+          FOLDER_ID=$(echo "$RESULT" | jq -r --arg NAME "$REPO_NAME" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
+
+          if [ -n "$FOLDER_ID" ] && [ "$FOLDER_ID" != "null" ]; then
+            echo "Folder already exists with ID $FOLDER_ID"
+          else
+            echo "Folder not found, creating under parent $parent_id..."
+
+            MUTATION=$(build_create_mutation "$parent_id" "$REPO_NAME" "$REPO_NAME")
+            JSON_MUT=$(jq -n --arg q "$MUTATION" '{ query: $q }')
+
+            RESULT_MUT=$(curl -s -X POST "$GRAPHQL_URL" \
+              -H "Authorization: Bearer $WIKI_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "$JSON_MUT")
+
+            if ! echo "$RESULT_MUT" | jq . >/dev/null 2>&1; then
+              echo "ERROR: Non-JSON response when creating folder:"
+              echo "$RESULT_MUT"
+              exit 1
+            fi
+
+            HAS_ERRORS=$(echo "$RESULT_MUT" | jq -e '.errors? != null' >/dev/null 2>&1; echo $?)
+            SUCCEEDED=$(echo "$RESULT_MUT" | jq -r '.data.assets.createFolder.responseResult.succeeded // empty' 2>/dev/null || true)
+            MESSAGE=$(echo "$RESULT_MUT" | jq -r '.data.assets.createFolder.responseResult.message // empty' 2>/dev/null || true)
+
+            if [ "$HAS_ERRORS" -eq 0 ] || [ "$SUCCEEDED" != "true" ]; then
+              echo "Creation reported failure: $MESSAGE"
+              echo "Full response:"
+              echo "$RESULT_MUT"
+              exit 1
+            fi
+
+            RESULT_AFTER=$(curl -s -X POST "$GRAPHQL_URL" \
+              -H "Authorization: Bearer $WIKI_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "$JSON")
+
+            if echo "$RESULT_AFTER" | jq . >/dev/null 2>&1; then
+              FOLDER_ID=$(echo "$RESULT_AFTER" | jq -r --arg NAME "$REPO_NAME" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
+            else
+              echo "ERROR: Non-JSON response when re-listing folders after creation:"
+              echo "$RESULT_AFTER"
+              exit 1
+            fi
+
+            if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
+              echo "ERROR: Could not obtain a valid folder ID after creation. Creation response:"
+              echo "$RESULT_MUT"
+              exit 1
+            fi
+
+            echo "Folder created with ID $FOLDER_ID"
+          fi
+
+          if ! [[ "$FOLDER_ID" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: Wiki.js returned a non-numeric folder id ('$FOLDER_ID')."
+            exit 1
+          fi
+
+          echo "FOLDER_ID=$FOLDER_ID" >> $GITHUB_ENV
+
+
+      - name: Upload Media Files
+        env:
+          WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN_WIKILAB2 }}
+        run: |
+          TRIMMED_URL="${WIKI_URL%/}"
+          if [[ "$TRIMMED_URL" =~ /graphql$ ]]; then
+            GRAPHQL_URL="$TRIMMED_URL"
+            BASE_URL="${TRIMMED_URL%/graphql}"
+          else
+            BASE_URL="$TRIMMED_URL"
+            GRAPHQL_URL="${BASE_URL}/graphql"
+          fi
+          UPLOAD_URL="${BASE_URL%/}/u"
+
+          if [ -z "$MEDIA_FILES" ]; then
+            echo "No media files to upload."
+            exit 0
+          fi
+
+          build_folders_query() {
+            local parent="$1"
+            if ! [[ "$parent" =~ ^[0-9]+$ ]]; then
+              echo "ERROR: build_folders_query requires numeric parent id (received: '$parent')." >&2
+              exit 1
+            fi
+
+            jq -nr --argjson parent "$parent" '
+              "query { assets { folders(parentFolderId: " + ($parent|tostring) + ") { id name } } }"
+            '
+          }
+
+          build_create_mutation() {
+            local parent="$1"
+            local slug_raw="$2"
+            local name_raw="$3"
+            if ! [[ "$parent" =~ ^[0-9]+$ ]]; then
+              echo "ERROR: build_create_mutation requires numeric parent id (received: '$parent')." >&2
+              exit 1
+            fi
+
+            jq -nr --argjson parent "$parent" --arg slug "$slug_raw" --arg name "$name_raw" '
+              "mutation { assets { createFolder(parentFolderId: " + ($parent|tostring) + ", slug: " + ($slug|@json) + ", name: " + ($name|@json) + ") { responseResult { message succeeded } } } }"
+            '
+          }
+
+          ensure_folder_path() {
+            local parent_id="$1"
+            local path="$2"
+
+            if ! [[ "$parent_id" =~ ^[0-9]+$ ]]; then
+              echo "ERROR: ensure_folder_path requires numeric parent id (received: '$parent_id')." >&2
+              exit 1
+            fi
+
+            local IFS='/'
+            local parts=()
+            read -r -a parts <<< "$path"
+            for seg in "${parts[@]}"; do
+              [ -z "$seg" ] && continue
+
+              QUERY=$(build_folders_query "$parent_id")
+              JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
+
+              RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
+                -H "Authorization: Bearer $WIKI_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                --data "$JSON")
+
+              if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
+                echo "ERROR: Non-JSON response when listing folders (parent $parent_id):"
+                echo "$RESULT"
+                exit 1
+              fi
+
+              CHILD_ID=$(echo "$RESULT" | jq -r --arg NAME "$seg" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
+
+              if [ -n "$CHILD_ID" ] && [ "$CHILD_ID" != "null" ]; then
+                echo "Found folder '$seg' (id: $CHILD_ID) under parent $parent_id"
+                parent_id="$CHILD_ID"
+                if ! [[ "$parent_id" =~ ^[0-9]+$ ]]; then
+                  echo "ERROR: Wiki.js returned a non-numeric folder id ('$parent_id') for '$seg'." >&2
+                  exit 1
+                fi
+                continue
+              fi
+
+              echo "Creating folder '$seg' under parent $parent_id"
+
+              MUTATION=$(build_create_mutation "$parent_id" "$seg" "$seg")
+              JSON_MUT=$(jq -n --arg q "$MUTATION" '{ query: $q }')
+
+              RESULT_MUT=$(curl -s -X POST "$GRAPHQL_URL" \
+                -H "Authorization: Bearer $WIKI_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                --data "$JSON_MUT")
+
+              if ! echo "$RESULT_MUT" | jq . >/dev/null 2>&1; then
+                echo "ERROR: Non-JSON response when creating folder '$seg' under parent $parent_id:"
+                echo "$RESULT_MUT"
+                exit 1
+              fi
+
+              HAS_ERRORS=$(echo "$RESULT_MUT" | jq -e '.errors? != null' >/dev/null 2>&1; echo $?)
+              SUCCEEDED=$(echo "$RESULT_MUT" | jq -r '.data.assets.createFolder.responseResult.succeeded // empty' 2>/dev/null || true)
+              MESSAGE=$(echo "$RESULT_MUT" | jq -r '.data.assets.createFolder.responseResult.message // empty' 2>/dev/null || true)
+
+              if [ "$HAS_ERRORS" -eq 0 ] || [ "$SUCCEEDED" != "true" ]; then
+                echo "Creation of '$seg' under parent $parent_id failed: $MESSAGE"
+                echo "Full response:"
+                echo "$RESULT_MUT"
+                exit 1
+              fi
+
+              RESULT2=$(curl -s -X POST "$GRAPHQL_URL" \
+                -H "Authorization: Bearer $WIKI_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                --data "$JSON")
+
+              if echo "$RESULT2" | jq . >/dev/null 2>&1; then
+                CHILD_ID=$(echo "$RESULT2" | jq -r --arg NAME "$seg" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
+              else
+                echo "WARNING: Non-JSON response when re-listing children of $parent_id:"
+                echo "$RESULT2"
+              fi
+
+              if [ -z "$CHILD_ID" ] || [ "$CHILD_ID" = "null" ]; then
+                echo "ERROR: Could not create/find folder '$seg' under parent $parent_id."
+                echo "$RESULT_MUT"
+                exit 1
+              fi
+
+              echo "Created folder '$seg' (id: $CHILD_ID) under parent $parent_id"
+              parent_id="$CHILD_ID"
+              if ! [[ "$parent_id" =~ ^[0-9]+$ ]]; then
+                echo "ERROR: Wiki.js returned a non-numeric folder id ('$parent_id') for '$seg'." >&2
+                exit 1
+              fi
+            done
+
+            echo "$parent_id"
+          }
+
+          echo "$MEDIA_FILES" | while IFS= read -r filepath || [ -n "$filepath" ]; do
+            [ -z "$filepath" ] && continue
+            echo "Processing $filepath"
+
+            relpath="${filepath#./}"
+            dirpath="$(dirname "$relpath")"
+
+            target_parent="$FOLDER_ID"
+
+            if [ "$dirpath" != "." ] && [ "$dirpath" != "$relpath" ]; then
+              target_parent="$(ensure_folder_path "$FOLDER_ID" "$dirpath")"
+            fi
+
+            echo "Uploading $filepath to folder id $target_parent"
+
+            RESPONSE_WITH_STATUS=$(curl -s -w "\n%{http_code}" -X POST "$UPLOAD_URL" \
+              -H "Authorization: Bearer $WIKI_API_TOKEN" \
+              -F "mediaUpload={\"folderId\":$target_parent}" \
+              -F "mediaUpload=@$filepath")
+            HTTP_STATUS=$(echo "$RESPONSE_WITH_STATUS" | tail -n1)
+            BODY=$(echo "$RESPONSE_WITH_STATUS" | sed '$d')
+
+            if [[ "$HTTP_STATUS" =~ ^2 ]]; then
+              if echo "$BODY" | jq . >/dev/null 2>&1; then
+                echo "$BODY" | jq .
+              else
+                echo "Upload succeeded (HTTP $HTTP_STATUS) for file: $filepath"
+                echo "$BODY"
+              fi
+            else
+              echo "Upload failed (HTTP $HTTP_STATUS) for file: $filepath"
+              if echo "$BODY" | jq . >/dev/null 2>&1; then
+                echo "$BODY" | jq .
+              else
+                echo "$BODY"
+              fi
+              exit 1
+            fi
+          done
+
+
