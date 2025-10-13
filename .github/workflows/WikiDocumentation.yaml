@@ -10,7 +10,6 @@ on:
 permissions:
   contents: read
   actions: write
-  variables: read
 
 env:
   WIKI_URL: "http://wiki.franquinho.info/graphql"
@@ -495,118 +494,121 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Get Page IDs from Repo Variables
-        env:
-          #GH_TOKEN: ${{ secrets.REPO_TOKEN }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+      - name: Query Wiki.js for existing pages
+        id: query
         run: |
-          echo "Fetching repository variables..."
-          VARS_JSON=$(gh api repos/${GITHUB_REPOSITORY}/actions/variables)
-          echo "Repository variables fetched."
+          set -euo pipefail
+          echo "🔍 Querying Wiki.js for existing pages..."
 
-          # Send Variables to the env
-          echo "Setting environment variables for WIKI_*_ID:"
-          for VAR in $(echo "$VARS_JSON" | jq -r '.variables[].name' | grep '^WIKI_.*_ID$'); do
-            VALUE=$(echo "$VARS_JSON" | jq -r --arg NAME "$VAR" '.variables[] | select(.name == $NAME) | .value')
-            echo "  - $VAR: $VALUE"
-            echo "$VAR=$VALUE" >> $GITHUB_ENV
-          done
+          BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/_-]/_/g')
+          BASE_PATH_SAFE=$(echo "$BASE_PATH_SAFE" | sed 's#//*#/#g')
+          REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
+          REPO_PATH=$(echo "$REPO_PATH" | sed 's#//*#/#g')
+
+          QUERY='query ($locale: String!) { pages { list(locale: $locale) { id title path } } }'
+          JSON_PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" '{query: $q, variables: { locale: $loc }}')
+
+          RESULT=$(curl -sS -X POST "$WIKI_URL" \
+            -H "Authorization: Bearer $WIKI_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$JSON_PAYLOAD")
+
+          echo "$RESULT" | jq '.data.pages.list[] | select(.path | startswith("'"$REPO_PATH"'")) | {id, title, path}'
+
+          # Exportar IDs como variáveis de ambiente
+          echo "$RESULT" | jq -r --arg path "$REPO_PATH" \
+            '.data.pages.list[]
+             | select(.path | startswith($path))
+             | "WIKI_PAGE_\(.title | ascii_upcase)="+(.id|tostring)' >> $GITHUB_ENV
+
+          echo "✅ Exported page IDs to environment."
 
       - name: Update the Files in Wiki
         run: |
+          set -euo pipefail
+
           DOC_ROOT="${BASE_PATH}/${REPO_NAME}/documentation/"
 
           # List all documentation files from the output
           docs_files=(${{ needs.check-pages-folders.outputs.docs_files }})
-          echo "All documentation files from repository: ${docs_files[*]}"
+          echo "📘 Documentation files found: ${docs_files[*]}"
 
-          # Remove Missing files from the list (they will be created in other step)
+          # Remove Missing files (they will be created elsewhere)
           missing_files=(${{ needs.check-pages-folders.outputs.missing_files }})
-          echo "Removing missing files from update list..."
           for MISSING in "${missing_files[@]}"; do
             MISSING_BASENAME="$(basename "$MISSING")"
-            for i in "${!docs_files[@]}"; do
-              if [ "${docs_files[$i]}" = "$MISSING_BASENAME" ]; then
-                unset 'docs_files[i]'
-              fi
-            done
+            docs_files=("${docs_files[@]/$MISSING_BASENAME}")
           done
-          
-          echo "Documentation files after removing missing ones: ${docs_files[*]}"
+          echo "📄 After removing missing files: ${docs_files[*]}"
 
-          # Remove the unchanged files from the list (if any)
+          # Keep only changed documentation files
           changed_files=(${{ needs.check-altered-files.outputs.doc_files_changed }})
-          # Remove extension and keep only the basename for each changed file
           for i in "${!changed_files[@]}"; do
             changed_files[$i]=$(basename "${changed_files[$i]}" .md)
           done
-          echo "Keeping only changed files for update: ${changed_files[*]}"
           for i in "${!docs_files[@]}"; do
             if [[ ! " ${changed_files[*]} " =~ " ${docs_files[$i]} " ]]; then
               unset 'docs_files[i]'
             fi
           done
 
-          echo "Final list of documentation files to update: ${docs_files[*]}"
-
           if [ ${#docs_files[@]} -eq 0 ]; then
-            echo "No documentation files to update after filtering. Exiting."
+            echo "ℹ️ No documentation files to update. Exiting."
             exit 0
           fi
 
           for FILE in "${docs_files[@]}"; do
-            echo "  • Will update: $FILE"
-            # Define source markdown file
-            src_md="documentation/$(basename "$FILE").md"
-
-            # Read Content from the source markdown file
+            echo "📝 Updating: $FILE"
+            src_md="documentation/${FILE}.md"
             CONTENT=$(<"$src_md")
 
-            # Rewrite links just in case (maybe not needed cause its already at the doc folder)
-            CONTENT=$(
-              printf '%s\n' "$CONTENT" | sed -E \
-                -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
-                -e 's#\]\([[:space:]]*documentation/#](./documentation/#g' \
-                -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md([?#][^)]*)\)#](./documentation/\1\2)#g' \
-                -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
+            # Rewrite internal links
+            CONTENT=$(printf '%s\n' "$CONTENT" | sed -E \
+              -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
+              -e 's#\]\([[:space:]]*documentation/#](./documentation/#g' \
+              -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md([?#][^)]*)\)#](./documentation/\1\2)#g' \
+              -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
             )
 
-            CONTENT_JSON=$(jq -n --arg c "$CONTENT" '$c')
-
-            # Build GraphQL query
-            TITLE="$(basename "$FILE")"
-            echo "    - Title: $TITLE"
-
-            TITLE_SAFE="${TITLE^^}"
+            # Determine the page ID dynamically from environment
+            TITLE_SAFE="${FILE^^}"
             TITLE_SAFE="${TITLE_SAFE//[^A-Z0-9_]/_}"
-            VAR_NAME="WIKI_${TITLE_SAFE}_ID"
-            PAGE_ID="${!VAR_NAME}"
-            echo "    - Page ID: $PAGE_ID"
+            PAGE_ID_VAR="WIKI_PAGE_${TITLE_SAFE}"
+            PAGE_ID="${!PAGE_ID_VAR:-}"
 
             if [ -z "$PAGE_ID" ]; then
-              echo "⚠️ Page ID for $TITLE not found in repository variables ($VAR_NAME). Skipping."
+              echo "⚠️ No existing Wiki page for '$FILE' found (skipping)."
               continue
             fi
 
-            # Build GraphQL query in a variable (no expansion inside)
-            QUERY='mutation ($id: Int!, $content: String!, $locale: String!) { pages { update(id: $id, content: $content, editor: "markdown", isPrivate: false, isPublished: true, locale: $locale, tags: []) { responseResult { succeeded slug message } page { id title path updatedAt } } } }'
+            echo "🔗 Found Wiki Page ID: $PAGE_ID"
 
-            # Build payload: pass the query + variables; jq escapes values safely
+            # Build GraphQL mutation
+            QUERY='mutation ($id: Int!, $content: String!, $locale: String!) {
+              pages {
+                update(id: $id, content: $content, editor: "markdown",
+                       isPrivate: false, isPublished: true, locale: $locale, tags: []) {
+                  responseResult { succeeded message }
+                  page { id title path updatedAt }
+                }
+              }
+            }'
+
             JSON_PAYLOAD=$(jq -n \
               --arg q "$QUERY" \
-              --argjson id $PAGE_ID \
+              --argjson id "$PAGE_ID" \
               --arg content "$CONTENT" \
               --arg loc "$WIKI_LOCALE" \
               '{query: $q, variables: { id: $id, content: $content, locale: $loc }}')
-            
+
             RESULT=$(curl -s -X POST "$WIKI_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data "$JSON_PAYLOAD")
-            
+
             SUCCEEDED=$(echo "$RESULT" | jq -r '.data.pages.update.responseResult.succeeded // empty')
             if [ "$SUCCEEDED" = "true" ]; then
-              echo "✅ Updated: $FILE"
+              echo "✅ Successfully updated: $FILE"
             else
               echo "⚠️ Failed to update: $FILE"
               echo "$RESULT" | jq .errors
@@ -614,64 +616,87 @@ jobs:
             fi
           done
 
+
   update-readme-content:
     name: "Update ReadMe in Wiki"
     runs-on: ubuntu-latest
     needs: [check-pages-folders, check-altered-files]
-    if: needs.check-pages-folders.outputs.has_readme_page == 'true' && needs.check-altered-files.outputs.readme_changed == 'true'
+    if: needs.check-altered-files.outputs.readme_changed == 'true'
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Update README.md content (read and rewrite links)
-        env:
-          WIKI_README_ID: ${{ vars.WIKI_README_ID }}
+      - name: Find README page ID in Wiki.js
+        id: find_readme
         run: |
           set -euo pipefail
-          if [ -z "$WIKI_README_ID" ]; then
-            echo "⚠️ WIKI_README_ID is not set. Exiting."
-            exit 1
+          echo "🔍 Searching README page in Wiki.js..."
+
+          BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/_-]/_/g')
+          BASE_PATH_SAFE=$(echo "$BASE_PATH_SAFE" | sed 's#//*#/#g')
+          REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
+          REPO_PATH=$(echo "$REPO_PATH" | sed 's#//*#/#g')
+
+          QUERY='query ($locale: String!) { pages { list(locale: $locale) { id path title } } }'
+          JSON_PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" '{query: $q, variables: { locale: $loc }}')
+
+          RESULT=$(curl -sS -X POST "$WIKI_URL" \
+            -H "Authorization: Bearer $WIKI_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$JSON_PAYLOAD")
+
+          PAGE_ID=$(echo "$RESULT" | jq -r --arg path "${REPO_PATH}/readme" \
+                     '.data.pages.list[] | select(.path == $path) | .id')
+
+          if [ -z "$PAGE_ID" ] || [ "$PAGE_ID" = "null" ]; then
+            echo "⚠️ README page not found in Wiki. Skipping update."
+            echo "found=false" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Found README page ID: $PAGE_ID"
+            echo "found=true" >> $GITHUB_OUTPUT
+            echo "page_id=$PAGE_ID" >> $GITHUB_OUTPUT
           fi
 
-          # Ler e normalizar CRLF
+      - name: Update README content in Wiki.js
+        if: steps.find_readme.outputs.found == 'true'
+        run: |
+          set -euo pipefail
+          PAGE_ID="${{ steps.find_readme.outputs.page_id }}"
+
           CONTENT=$(tr -d '\r' < README.md)
+          CONTENT=$(printf '%s\n' "$CONTENT" | sed -E \
+            -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
+            -e 's#\]\([[:space:]]*documentation/#](./documentation/#g' \
+            -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md([?#][^)]*)\)#](./documentation/\1\2)#g' \
+            -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g')
 
-          # Reescrever links
-          CONTENT=$(
-            printf '%s\n' "$CONTENT" | sed -E \
-              -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
-              -e 's#\]\([[:space:]]*documentation/#](./documentation/#g' \
-              -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md([?#][^)]*)\)#](./documentation/\1\2)#g' \
-              -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
-          )
-          
-          CONTENT_JSON=$(jq -n --arg c "$CONTENT" '$c')
-          echo "✅ Prepared README content."
-
-          QUERY='mutation ($id: Int!, $content: String!, $locale: String!) { pages { update(id: $id, content: $content, editor: "markdown", isPrivate: false, isPublished: true, locale: $locale, tags: []) { responseResult { succeeded slug message } page { id title path updatedAt } } } }'
+          QUERY='mutation ($id: Int!, $content: String!, $locale: String!) {
+            pages {
+              update(id: $id, content: $content, editor: "markdown",
+                     isPrivate: false, isPublished: true, locale: $locale) {
+                responseResult { succeeded message }
+              }
+            }
+          }'
 
           JSON_PAYLOAD=$(jq -n \
             --arg q "$QUERY" \
-            --arg id "$WIKI_README_ID" \
+            --argjson id "$PAGE_ID" \
             --arg content "$CONTENT" \
             --arg loc "$WIKI_LOCALE" \
-            '{query: $q, variables: { id: ($id | tonumber), content: $content, locale: $loc }}'
-          )
+            '{query: $q, variables: { id: $id, content: $content, locale: $loc }}')
 
           RESULT=$(curl -s -X POST "$WIKI_URL" \
             -H "Authorization: Bearer $WIKI_API_TOKEN" \
             -H "Content-Type: application/json" \
-            --data "$JSON_PAYLOAD" | jq)
+            --data "$JSON_PAYLOAD")
 
-          echo "$RESULT"
-
-          SUCCEEDED=$(echo "$RESULT" | jq -r '.data.pages.update.responseResult.succeeded // empty')
-
-          if [ "$SUCCEEDED" = "true" ]; then
-            echo "✅ Upload complete."
+          SUCCESS=$(echo "$RESULT" | jq -r '.data.pages.update.responseResult.succeeded')
+          if [ "$SUCCESS" = "true" ]; then
+            echo "✅ README updated successfully."
           else
-            echo "⚠️ Upload Failed."
-            echo "$RESULT" | jq .errors
+            echo "⚠️ README update failed."
+            echo "$RESULT" | jq .
             exit 1
           fi
 
@@ -679,54 +704,77 @@ jobs:
     name: "Update Changelog in Wiki"
     runs-on: ubuntu-latest
     needs: [check-pages-folders, check-altered-files, update-readme-content]
-    if: needs.check-pages-folders.outputs.has_changelog_page == 'true' && needs.check-altered-files.outputs.changelog_changed == 'true'
+    if: needs.check-altered-files.outputs.changelog_changed == 'true'
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Upload Changelog
-        env:
-          WIKI_CHANGELOG_ID: ${{ vars.WIKI_CHANGELOG_ID }}
+      - name: Find CHANGELOG page ID in Wiki.js
+        id: find_changelog
         run: |
+          set -euo pipefail
+          echo "🔍 Searching CHANGELOG page in Wiki.js..."
+
           BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/_-]/_/g')
           BASE_PATH_SAFE=$(echo "$BASE_PATH_SAFE" | sed 's#//*#/#g')
           REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
-          CHANGELOG_PATH="${REPO_PATH}/changelog"
-          echo "Updating CHANGELOG page at path: ${CHANGELOG_PATH}"
+          REPO_PATH=$(echo "$REPO_PATH" | sed 's#//*#/#g')
 
-          if [ -z "$WIKI_CHANGELOG_ID" ]; then
-            echo "⚠️ WIKI_CHANGELOG_ID is not set. Exiting."
-            exit 1
+          QUERY='query ($locale: String!) { pages { list(locale: $locale) { id path title } } }'
+          JSON_PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" '{query: $q, variables: { locale: $loc }}')
+
+          RESULT=$(curl -sS -X POST "$WIKI_URL" \
+            -H "Authorization: Bearer $WIKI_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$JSON_PAYLOAD")
+
+          PAGE_ID=$(echo "$RESULT" | jq -r --arg path "${REPO_PATH}/changelog" \
+                     '.data.pages.list[] | select(.path == $path) | .id')
+
+          if [ -z "$PAGE_ID" ] || [ "$PAGE_ID" = "null" ]; then
+            echo "⚠️ CHANGELOG page not found in Wiki. Skipping update."
+            echo "found=false" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Found CHANGELOG page ID: $PAGE_ID"
+            echo "found=true" >> $GITHUB_OUTPUT
+            echo "page_id=$PAGE_ID" >> $GITHUB_OUTPUT
           fi
 
+      - name: Update CHANGELOG content in Wiki.js
+        if: steps.find_changelog.outputs.found == 'true'
+        run: |
+          set -euo pipefail
+          PAGE_ID="${{ steps.find_changelog.outputs.page_id }}"
+
           CONTENT=$(tr -d '\r' < CHANGELOG.md)
-          CONTENT_JSON=$(jq -n --arg c "$CONTENT" '$c')
 
-          # Build GraphQL query in a variable (no expansion inside)
-          QUERY='mutation ($id: Int!, $content: String!, $locale: String!) { pages { update(id: $id, title: "CHANGELOG", content: $content, editor: "markdown", isPrivate: false, isPublished: true, locale: $locale, tags: []) { responseResult { succeeded slug message } page { id title path updatedAt } } } }'
+          QUERY='mutation ($id: Int!, $content: String!, $locale: String!) {
+            pages {
+              update(id: $id, content: $content, editor: "markdown",
+                     isPrivate: false, isPublished: true, locale: $locale) {
+                responseResult { succeeded message }
+              }
+            }
+          }'
 
-          # Build payload: pass the query + variables; jq escapes values safely
           JSON_PAYLOAD=$(jq -n \
             --arg q "$QUERY" \
-            --argjson id "$WIKI_CHANGELOG_ID" \
+            --argjson id "$PAGE_ID" \
             --arg content "$CONTENT" \
             --arg loc "$WIKI_LOCALE" \
-            '{query: $q, variables: { id: ($id | tonumber), content: $content, locale: $loc }}')
+            '{query: $q, variables: { id: $id, content: $content, locale: $loc }}')
 
           RESULT=$(curl -s -X POST "$WIKI_URL" \
             -H "Authorization: Bearer $WIKI_API_TOKEN" \
             -H "Content-Type: application/json" \
             --data "$JSON_PAYLOAD")
-          
-          echo "$RESULT" | jq .
 
-          SUCCEEDED=$(echo "$RESULT" | jq -r '.data.pages.update.responseResult.succeeded // empty')
-
-          if [ "$SUCCEEDED" = "true" ]; then
-            echo "✅ Updated: $CHANGELOG_PATH"
+          SUCCESS=$(echo "$RESULT" | jq -r '.data.pages.update.responseResult.succeeded')
+          if [ "$SUCCESS" = "true" ]; then
+            echo "✅ CHANGELOG updated successfully."
           else
-            echo "⚠️ Failed to update: $CHANGELOG_PATH"
-            echo "$RESULT" | jq .errors
+            echo "⚠️ CHANGELOG update failed."
+            echo "$RESULT" | jq .
             exit 1
           fi
 
