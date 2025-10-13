@@ -18,18 +18,43 @@ env:
   WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
   WIKI_LOCALE: "en"
   BASE_PATH: "Pedro/Aplicações"
+  BASE_PATH_SAFE: ${{ env.BASE_PATH }}
   REPO_NAME: ${{ vars.APP_NAME }}
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
 
 jobs:
+  prepare-base-path:
+    name: "Prepare Base Path"
+    runs-on: ubuntu-latest
+    outputs:
+      base_path_safe: ${{ steps.compute.outputs.base_path_safe }}
+    steps:
+      - name: Compute sanitized BASE_PATH
+        id: compute
+        env:
+          RAW_BASE_PATH: ${{ env.BASE_PATH }}
+        run: |
+          set -euo pipefail
+          raw="${RAW_BASE_PATH:-}"
+          safe=$(printf '%s' "$raw" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || printf '%s' "$raw")
+          safe=$(printf '%s' "$safe" | sed 's/[^a-zA-Z0-9/_-]/_/g')
+          safe=$(printf '%s' "$safe" | sed 's#//*#/#g')
+          safe="${safe%/}"
+          echo "Sanitized BASE_PATH: $safe"
+          echo "BASE_PATH_SAFE=$safe" >> "$GITHUB_ENV"
+          echo "base_path_safe=$safe" >> "$GITHUB_OUTPUT"
+
   check-altered-files:
     name: "Check Changed Files"
     runs-on: ubuntu-latest
+    needs: [prepare-base-path]
     outputs:
       docs_changed: ${{ steps.check.outputs.docs_changed }}
       readme_changed: ${{ steps.check.outputs.readme_changed }}
       changelog_changed: ${{ steps.check.outputs.changelog_changed }}
       doc_files_changed: ${{ steps.check.outputs.doc_files_changed }}
+    env:
+      BASE_PATH_SAFE: ${{ needs.prepare-base-path.outputs.base_path_safe }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -86,6 +111,9 @@ jobs:
   check-pages-folders:
     name: "Check if Pages and Folders are created"
     runs-on: ubuntu-latest
+    needs: [prepare-base-path]
+    env:
+      BASE_PATH_SAFE: ${{ needs.prepare-base-path.outputs.base_path_safe }}
     outputs:
       has_repo_path: ${{ steps.check.outputs.has_repo_path }}
       has_documentation_folder: ${{ steps.check.outputs.has_documentation_folder }}
@@ -106,8 +134,6 @@ jobs:
           set -euo pipefail
 
           # Definir Paths
-          BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/_-]/_/g')
-          BASE_PATH_SAFE=$(echo "$BASE_PATH_SAFE" | sed 's#//*#/#g')
           REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
 
           DOC_PREFIX="${REPO_PATH}documentation/"
@@ -207,16 +233,16 @@ jobs:
   create-missing-files:
     name: "Create Missing Documentation Files"
     runs-on: ubuntu-latest
-    needs: [check-pages-folders]
+    needs: [prepare-base-path, check-pages-folders]
     if: fromJSON(needs.check-pages-folders.outputs.missing_count) > 0
+    env:
+      BASE_PATH_SAFE: ${{ needs.prepare-base-path.outputs.base_path_safe }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
       - name: Create Documentation Missing Files
         run: |
-          BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/_-]/_/g')
-          BASE_PATH_SAFE=$(echo "$BASE_PATH_SAFE" | sed 's#//*#/#g')
           REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
 
           DOC_PREFIX="${REPO_PATH}documentation/"
@@ -293,8 +319,10 @@ jobs:
   create-readme-page:
     name: "Create README Page if missing"
     runs-on: ubuntu-latest
-    needs: [check-pages-folders]
+    needs: [prepare-base-path, check-pages-folders]
     if: needs.check-pages-folders.outputs.has_readme_page == 'false'
+    env:
+      BASE_PATH_SAFE: ${{ needs.prepare-base-path.outputs.base_path_safe }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -304,13 +332,7 @@ jobs:
           set -euo pipefail
 
           # ------------------------------------------------------------
-          # 1️⃣ Normalizar o BASE_PATH (remover acentos / caracteres ilegais)
-          # ------------------------------------------------------------
-          BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/_-]/_/g')
-          BASE_PATH_SAFE=$(echo "$BASE_PATH_SAFE" | sed 's#//*#/#g')
-
-          # ------------------------------------------------------------
-          # 2️⃣ Construir o caminho REPO_PATH de forma segura
+          # 1️⃣ Construir o caminho REPO_PATH de forma segura
           # ------------------------------------------------------------
           REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
           REPO_PATH=$(echo "$REPO_PATH" | sed 's#//*#/#g')
@@ -396,8 +418,10 @@ jobs:
   create-changelog-page:
     name: "Create CHANGELOG Page if missing"
     runs-on: ubuntu-latest
-    needs: [check-pages-folders, create-readme-page]
+    needs: [prepare-base-path, check-pages-folders, create-readme-page]
     if: needs.check-pages-folders.outputs.has_changelog_page == 'false'
+    env:
+      BASE_PATH_SAFE: ${{ needs.prepare-base-path.outputs.base_path_safe }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -407,13 +431,7 @@ jobs:
           set -euo pipefail
 
           # ------------------------------------------------------------
-          # 1️⃣ Normalizar BASE_PATH (remover acentos e caracteres ilegais)
-          # ------------------------------------------------------------
-          BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/_-]/_/g')
-          BASE_PATH_SAFE=$(echo "$BASE_PATH_SAFE" | sed 's#//*#/#g')
-
-          # ------------------------------------------------------------
-          # 2️⃣ Construir caminho REPO_PATH e CHANGELOG_PATH
+          # 1️⃣ Construir caminho REPO_PATH e CHANGELOG_PATH
           # ------------------------------------------------------------
           REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
           REPO_PATH=$(echo "$REPO_PATH" | sed 's#//*#/#g')
@@ -488,8 +506,10 @@ jobs:
   update-docs-content:
     name: "Update Documentation Files in Wiki"
     runs-on: ubuntu-latest
-    needs: [check-pages-folders, check-altered-files]
+    needs: [prepare-base-path, check-pages-folders, check-altered-files]
     if: always()
+    env:
+      BASE_PATH_SAFE: ${{ needs.prepare-base-path.outputs.base_path_safe }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -500,8 +520,6 @@ jobs:
           set -euo pipefail
           echo "🔍 Querying Wiki.js for existing pages..."
 
-          BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/_-]/_/g')
-          BASE_PATH_SAFE=$(echo "$BASE_PATH_SAFE" | sed 's#//*#/#g')
           REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
           REPO_PATH=$(echo "$REPO_PATH" | sed 's#//*#/#g')
 
@@ -527,7 +545,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          DOC_ROOT="${BASE_PATH}/${REPO_NAME}/documentation/"
+          DOC_ROOT="${BASE_PATH_SAFE}/${REPO_NAME}/documentation/"
 
           # List all documentation files from the output
           docs_files=(${{ needs.check-pages-folders.outputs.docs_files }})
@@ -620,8 +638,10 @@ jobs:
   update-readme-content:
     name: "Update ReadMe in Wiki"
     runs-on: ubuntu-latest
-    needs: [check-pages-folders, check-altered-files]
+    needs: [prepare-base-path, check-pages-folders, check-altered-files]
     if: needs.check-altered-files.outputs.readme_changed == 'true'
+    env:
+      BASE_PATH_SAFE: ${{ needs.prepare-base-path.outputs.base_path_safe }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -632,8 +652,6 @@ jobs:
           set -euo pipefail
           echo "🔍 Searching README page in Wiki.js..."
 
-          BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/_-]/_/g')
-          BASE_PATH_SAFE=$(echo "$BASE_PATH_SAFE" | sed 's#//*#/#g')
           REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
           REPO_PATH=$(echo "$REPO_PATH" | sed 's#//*#/#g')
 
@@ -703,8 +721,10 @@ jobs:
   update-changelog-content:
     name: "Update Changelog in Wiki"
     runs-on: ubuntu-latest
-    needs: [check-pages-folders, check-altered-files, update-readme-content]
+    needs: [prepare-base-path, check-pages-folders, check-altered-files, update-readme-content]
     if: needs.check-altered-files.outputs.changelog_changed == 'true'
+    env:
+      BASE_PATH_SAFE: ${{ needs.prepare-base-path.outputs.base_path_safe }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -715,8 +735,6 @@ jobs:
           set -euo pipefail
           echo "🔍 Searching CHANGELOG page in Wiki.js..."
 
-          BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/_-]/_/g')
-          BASE_PATH_SAFE=$(echo "$BASE_PATH_SAFE" | sed 's#//*#/#g')
           REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
           REPO_PATH=$(echo "$REPO_PATH" | sed 's#//*#/#g')
 
@@ -782,6 +800,10 @@ jobs:
   upload-docs-media:
     name: "Upload Documentation Media"
     runs-on: ubuntu-latest
+    needs: [prepare-base-path]
+    env:
+      BASE_PATH_SAFE: ${{ needs.prepare-base-path.outputs.base_path_safe }}
+      PARENT_FOLDER_ID: "1"
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -797,12 +819,6 @@ jobs:
         run: |
           set -euo pipefail
           echo "🔧 Preparing Wiki folder structure for media upload..."
-
-          # ------------------------------------------------------------
-          # 1️⃣ Normalizar BASE_PATH (remover acentos, caracteres ilegais e barras duplicadas)
-          # ------------------------------------------------------------
-          BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/_-]/_/g')
-          BASE_PATH_SAFE=$(echo "$BASE_PATH_SAFE" | sed 's#//*#/#g')
 
           REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
           REPO_PATH=$(echo "$REPO_PATH" | sed 's#//*#/#g')
