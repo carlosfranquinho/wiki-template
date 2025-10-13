@@ -5,8 +5,8 @@ on:
 
 env:
   WIKI_URL: http://wiki.franquinho.info
-  # Optional: set to an existing Wiki.js folder id to nest uploads; leave blank for root
-  PARENT_FOLDER_ID: ""
+  # Required: numeric Wiki.js folder id that will contain this repository's assets
+  PARENT_FOLDER_ID: "CHANGE_ME"
 
 jobs:
   upload-docs-media:
@@ -50,88 +50,56 @@ jobs:
           GRAPHQL_URL="${WIKI_URL%/}/graphql"
           normalize_parent_id() {
             local raw="$1"
-            if [ -z "$raw" ] || [ "$raw" = "null" ] || [ "$raw" = "None" ]; then
-              echo "null"
-              return
-            fi
-
             if [[ "$raw" =~ ^[0-9]+$ ]]; then
               echo "$raw"
               return
             fi
 
-            echo "null"
-          }
-
-          parent_clause_for() {
-            local parent="$1"
-            if [ "$parent" = "null" ]; then
-              echo "parentFolderId: null"
-            else
-              echo "parentFolderId: $parent"
-            fi
+            echo "ERROR: PARENT_FOLDER_ID must be a numeric Wiki.js folder id (received: '${raw}')." >&2
+            exit 1
           }
 
           build_folders_query() {
             local parent="$1"
-            local clause
-            clause=$(parent_clause_for "$parent")
-            printf 'query { assets { folders(%s) { id name } } }' "$clause"
+            jq -nr --argjson parent "$parent" '
+              "query { assets { folders(parentFolderId: " + ($parent|tostring) + ") { id name } } }"
+            '
           }
 
           build_create_mutation() {
             local parent="$1"
             local slug_raw="$2"
             local name_raw="$3"
-            local clause
-            clause=$(parent_clause_for "$parent")
-
-            jq -nr --arg clause "$clause" --arg slug "$slug_raw" --arg name "$name_raw" '
-              "mutation { assets { createFolder(" + $clause + ", slug: " + ($slug|@json) + ", name: " + ($name|@json) + ") { responseResult { message succeeded } folder { id name parentId } } } }"
+            jq -nr --argjson parent "$parent" --arg slug "$slug_raw" --arg name "$name_raw" '
+              "mutation { assets { createFolder(parentFolderId: " + ($parent|tostring) + ", slug: " + ($slug|@json) + ", name: " + ($name|@json) + ") { responseResult { message succeeded } } } }"
             '
           }
 
-          effective_parent="$(normalize_parent_id "$PARENT_FOLDER_ID")"
-          attempted_root="false"
+          parent_id="$(normalize_parent_id "$PARENT_FOLDER_ID")"
+          echo "Using parent folder id $parent_id."
 
-          if [ "$effective_parent" = "null" ]; then
-            attempted_root="true"
-            if [ -n "$PARENT_FOLDER_ID" ] && [ "$PARENT_FOLDER_ID" != "null" ] && [ "$PARENT_FOLDER_ID" != "None" ]; then
-              echo "WARNING: Provided PARENT_FOLDER_ID ('$PARENT_FOLDER_ID') is not numeric; defaulting to the wiki root."
-            else
-              echo "Parent folder id not provided; using the wiki root."
-            fi
-          else
-            echo "Using parent folder id $effective_parent."
+          QUERY=$(build_folders_query "$parent_id")
+          JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
+
+          RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
+            -H "Authorization: Bearer $WIKI_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$JSON")
+
+          if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
+            echo "ERROR: Non-JSON response when querying folders:"
+            echo "$RESULT"
+            exit 1
           fi
 
-          attempt_parent="$effective_parent"
+          FOLDER_ID=$(echo "$RESULT" | jq -r --arg NAME "$REPO_NAME" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
 
-          while true; do
-            QUERY=$(build_folders_query "$attempt_parent")
-            JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
+          if [ -n "$FOLDER_ID" ] && [ "$FOLDER_ID" != "null" ]; then
+            echo "Folder already exists with ID $FOLDER_ID"
+          else
+            echo "Folder not found, creating under parent $parent_id..."
 
-            RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
-              -H "Authorization: Bearer $WIKI_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data "$JSON")
-
-            if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
-              echo "ERROR: Non-JSON response when querying folders:"
-              echo "$RESULT"
-              exit 1
-            fi
-
-            FOLDER_ID=$(echo "$RESULT" | jq -r --arg NAME "$REPO_NAME" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
-
-            if [ -n "$FOLDER_ID" ] && [ "$FOLDER_ID" != "null" ]; then
-              echo "Folder already exists with ID $FOLDER_ID"
-              break
-            fi
-
-            echo "Folder not found, creating under parent $attempt_parent..."
-
-            MUTATION=$(build_create_mutation "$attempt_parent" "$REPO_NAME" "$REPO_NAME")
+            MUTATION=$(build_create_mutation "$parent_id" "$REPO_NAME" "$REPO_NAME")
             JSON_MUT=$(jq -n --arg q "$MUTATION" '{ query: $q }')
 
             RESULT_MUT=$(curl -s -X POST "$GRAPHQL_URL" \
@@ -151,22 +119,9 @@ jobs:
 
             if [ "$HAS_ERRORS" -eq 0 ] || [ "$SUCCEEDED" != "true" ]; then
               echo "Creation reported failure: $MESSAGE"
-              if [ "$attempt_parent" != "null" ] && [ "$attempted_root" = "false" ]; then
-                echo "Retrying creation under root (parentFolderId=null)."
-                attempt_parent="null"
-                attempted_root="true"
-                continue
-              fi
               echo "Full response:"
               echo "$RESULT_MUT"
               exit 1
-            fi
-
-            FOLDER_ID=$(echo "$RESULT_MUT" | jq -r '.data.assets.createFolder.folder.id // empty' 2>/dev/null || true)
-
-            if [ -n "$FOLDER_ID" ] && [ "$FOLDER_ID" != "null" ]; then
-              echo "Folder created with ID $FOLDER_ID"
-              break
             fi
 
             RESULT_AFTER=$(curl -s -X POST "$GRAPHQL_URL" \
@@ -177,26 +132,24 @@ jobs:
             if echo "$RESULT_AFTER" | jq . >/dev/null 2>&1; then
               FOLDER_ID=$(echo "$RESULT_AFTER" | jq -r --arg NAME "$REPO_NAME" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
             else
-              echo "WARNING: Non-JSON response when re-listing folders:"
+              echo "ERROR: Non-JSON response when re-listing folders after creation:"
               echo "$RESULT_AFTER"
+              exit 1
             fi
 
-            if [ -n "$FOLDER_ID" ] && [ "$FOLDER_ID" != "null" ]; then
-              echo "Folder created with ID $FOLDER_ID"
-              break
+            if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
+              echo "ERROR: Could not obtain a valid folder ID after creation. Creation response:"
+              echo "$RESULT_MUT"
+              exit 1
             fi
 
-            if [ "$attempt_parent" != "null" ] && [ "$attempted_root" = "false" ]; then
-              echo "Folder still not visible under parent $attempt_parent; retrying under root."
-              attempt_parent="null"
-              attempted_root="true"
-              continue
-            fi
+            echo "Folder created with ID $FOLDER_ID"
+          fi
 
-            echo "ERROR: Could not obtain a valid folder ID after creation. Creation response:"
-            echo "$RESULT_MUT"
+          if ! [[ "$FOLDER_ID" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: Wiki.js returned a non-numeric folder id ('$FOLDER_ID')."
             exit 1
-          done
+          fi
 
           echo "FOLDER_ID=$FOLDER_ID" >> $GITHUB_ENV
 
@@ -213,31 +166,29 @@ jobs:
             exit 0
           fi
 
-          parent_clause_for() {
-            local parent="$1"
-            if [ -z "$parent" ] || [ "$parent" = "null" ]; then
-              echo "parentFolderId: null"
-            else
-              echo "parentFolderId: $parent"
-            fi
-          }
-
           build_folders_query() {
             local parent="$1"
-            local clause
-            clause=$(parent_clause_for "$parent")
-            printf 'query { assets { folders(%s) { id name } } }' "$clause"
+            if ! [[ "$parent" =~ ^[0-9]+$ ]]; then
+              echo "ERROR: build_folders_query requires numeric parent id (received: '$parent')." >&2
+              exit 1
+            fi
+
+            jq -nr --argjson parent "$parent" '
+              "query { assets { folders(parentFolderId: " + ($parent|tostring) + ") { id name } } }"
+            '
           }
 
           build_create_mutation() {
             local parent="$1"
             local slug_raw="$2"
             local name_raw="$3"
-            local clause
-            clause=$(parent_clause_for "$parent")
+            if ! [[ "$parent" =~ ^[0-9]+$ ]]; then
+              echo "ERROR: build_create_mutation requires numeric parent id (received: '$parent')." >&2
+              exit 1
+            fi
 
-            jq -nr --arg clause "$clause" --arg slug "$slug_raw" --arg name "$name_raw" '
-              "mutation { assets { createFolder(" + $clause + ", slug: " + ($slug|@json) + ", name: " + ($name|@json) + ") { responseResult { message succeeded } folder { id name parentId } } } }"
+            jq -nr --argjson parent "$parent" --arg slug "$slug_raw" --arg name "$name_raw" '
+              "mutation { assets { createFolder(parentFolderId: " + ($parent|tostring) + ", slug: " + ($slug|@json) + ", name: " + ($name|@json) + ") { responseResult { message succeeded } } } }"
             '
           }
 
@@ -245,8 +196,9 @@ jobs:
             local parent_id="$1"
             local path="$2"
 
-            if [ -z "$parent_id" ] || [ "$parent_id" = "null" ]; then
-              parent_id="null"
+            if ! [[ "$parent_id" =~ ^[0-9]+$ ]]; then
+              echo "ERROR: ensure_folder_path requires numeric parent id (received: '$parent_id')." >&2
+              exit 1
             fi
 
             local IFS='/'
@@ -274,6 +226,10 @@ jobs:
               if [ -n "$CHILD_ID" ] && [ "$CHILD_ID" != "null" ]; then
                 echo "Found folder '$seg' (id: $CHILD_ID) under parent $parent_id"
                 parent_id="$CHILD_ID"
+                if ! [[ "$parent_id" =~ ^[0-9]+$ ]]; then
+                  echo "ERROR: Wiki.js returned a non-numeric folder id ('$parent_id') for '$seg'." >&2
+                  exit 1
+                fi
                 continue
               fi
 
@@ -304,20 +260,16 @@ jobs:
                 exit 1
               fi
 
-              CHILD_ID=$(echo "$RESULT_MUT" | jq -r '.data.assets.createFolder.folder.id // empty' 2>/dev/null || true)
+              RESULT2=$(curl -s -X POST "$GRAPHQL_URL" \
+                -H "Authorization: Bearer $WIKI_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                --data "$JSON")
 
-              if [ -z "$CHILD_ID" ] || [ "$CHILD_ID" = "null" ]; then
-                RESULT2=$(curl -s -X POST "$GRAPHQL_URL" \
-                  -H "Authorization: Bearer $WIKI_API_TOKEN" \
-                  -H "Content-Type: application/json" \
-                  --data "$JSON")
-
-                if echo "$RESULT2" | jq . >/dev/null 2>&1; then
-                  CHILD_ID=$(echo "$RESULT2" | jq -r --arg NAME "$seg" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
-                else
-                  echo "WARNING: Non-JSON response when re-listing children of $parent_id:"
-                  echo "$RESULT2"
-                fi
+              if echo "$RESULT2" | jq . >/dev/null 2>&1; then
+                CHILD_ID=$(echo "$RESULT2" | jq -r --arg NAME "$seg" '.data.assets.folders[]? | select(.name == $NAME) | .id' || true)
+              else
+                echo "WARNING: Non-JSON response when re-listing children of $parent_id:"
+                echo "$RESULT2"
               fi
 
               if [ -z "$CHILD_ID" ] || [ "$CHILD_ID" = "null" ]; then
@@ -328,6 +280,10 @@ jobs:
 
               echo "Created folder '$seg' (id: $CHILD_ID) under parent $parent_id"
               parent_id="$CHILD_ID"
+              if ! [[ "$parent_id" =~ ^[0-9]+$ ]]; then
+                echo "ERROR: Wiki.js returned a non-numeric folder id ('$parent_id') for '$seg'." >&2
+                exit 1
+              fi
             done
 
             echo "$parent_id"
