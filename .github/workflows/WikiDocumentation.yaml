@@ -14,7 +14,8 @@ permissions:
 env:
   WIKI_URL: "http://wiki.franquinho.info/graphql"
   #WIKI_URL: "http://cyberwiki.internal.ctt.pt/graphql"
-  WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN_WIKILAB2  }}
+  #WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN_WIKILAB2  }}
+  WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
   WIKI_LOCALE: "en"
   BASE_PATH: "Pedro/Aplicações"
   REPO_NAME: ${{ vars.APP_NAME }}
