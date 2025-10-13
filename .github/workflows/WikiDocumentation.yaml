@@ -10,6 +10,7 @@ on:
 permissions:
   contents: read
   actions: write
+  variables: read
 
 env:
   WIKI_URL: "http://wiki.franquinho.info/graphql"
@@ -108,7 +109,7 @@ jobs:
           # Definir Paths
           BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/_-]/_/g')
           BASE_PATH_SAFE=$(echo "$BASE_PATH_SAFE" | sed 's#//*#/#g')
-          REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}/"
+          REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
 
           DOC_PREFIX="${REPO_PATH}documentation/"
 
@@ -217,7 +218,7 @@ jobs:
         run: |
           BASE_PATH_SAFE=$(echo "$BASE_PATH" | iconv -f UTF-8 -t ASCII//TRANSLIT | sed 's/[^a-zA-Z0-9/_-]/_/g')
           BASE_PATH_SAFE=$(echo "$BASE_PATH_SAFE" | sed 's#//*#/#g')
-          REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}/"
+          REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
 
           DOC_PREFIX="${REPO_PATH}documentation/"
 
@@ -732,7 +733,7 @@ jobs:
 # Upload de Mídia
   upload-docs-media:
     name: "Upload Documentation Media"
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
