@@ -296,6 +296,8 @@ jobs:
       
       - name: Create README Page in Wiki.js
         run: |
+          REPO_PATH="${BASE_PATH}/${REPO_NAME}"
+          README_PATH="${REPO_PATH}/readme"
           set -euo pipefail
 
           # Ler e normalizar CRLF
