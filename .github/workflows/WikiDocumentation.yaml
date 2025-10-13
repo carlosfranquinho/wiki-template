@@ -12,7 +12,7 @@ permissions:
   actions: write
 
 env:
-  WIKI_URL: "http://wikilab2.internal.ctt.pt/graphql"
+  WIKI_URL: "http://wiki.franquinho.info/graphql"
   #WIKI_URL: "http://cyberwiki.internal.ctt.pt/graphql"
   WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN_WIKILAB2  }}
   WIKI_LOCALE: "en"
