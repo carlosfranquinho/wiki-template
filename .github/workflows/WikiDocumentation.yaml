@@ -130,9 +130,10 @@ jobs:
           set -euo pipefail
 
           # Definir Paths
-          REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
-
-          DOC_PREFIX="${REPO_PATH}documentation/"
+          REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
+          DOC_PREFIX="$(echo "${REPO_PATH}/documentation/" | sed 's#//*#/#g')"
+          README_PATH="$(echo "${REPO_PATH}/readme" | sed 's#//*#/#g')"
+          CHANGELOG_PATH="$(echo "${REPO_PATH}/changelog" | sed 's#//*#/#g')"
 
           echo "🔍 Verificações:"
           echo "  • REPO_PATH      = $REPO_PATH"
@@ -174,8 +175,8 @@ jobs:
           # Flags para verificar se os paths existem
           HAS_REPO_PATH=$(echo "$RESULT" | jq --arg path "$REPO_PATH" '[.data.pages.list[] | select(.path | startswith($path))] | length > 0')
           HAS_DOCUMENTATION_FOLDER=$(echo "$RESULT" | jq --arg path "$DOC_PREFIX" '[.data.pages.list[] | select(.path | startswith($path))] | length > 0')
-          HAS_README_PAGE=$(echo "$RESULT" | jq --arg path "${REPO_PATH}readme" '[.data.pages.list[] | select(.path == $path)] | length > 0')
-          HAS_CHANGELOG_PAGE=$(echo "$RESULT" | jq --arg path "${REPO_PATH}changelog" '[.data.pages.list[] | select(.path == $path)] | length > 0')
+          HAS_README_PAGE=$(echo "$RESULT" | jq --arg path "$README_PATH" '[.data.pages.list[] | select(.path == $path)] | length > 0')
+          HAS_CHANGELOG_PAGE=$(echo "$RESULT" | jq --arg path "$CHANGELOG_PATH" '[.data.pages.list[] | select(.path == $path)] | length > 0')
 
 
           # List all .md files in documentation folder
@@ -239,9 +240,8 @@ jobs:
 
       - name: Create Documentation Missing Files
         run: |
-          REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
-
-          DOC_PREFIX="${REPO_PATH}documentation/"
+          REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
+          DOC_PREFIX="$(echo "${REPO_PATH}/documentation/" | sed 's#//*#/#g')"
 
           # Read missing files from output
           missing_files=(${{ needs.check-pages-folders.outputs.missing_files }})
@@ -330,12 +330,10 @@ jobs:
           # ------------------------------------------------------------
           # 1️⃣ Construir o caminho REPO_PATH de forma segura
           # ------------------------------------------------------------
-          REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
-          REPO_PATH=$(echo "$REPO_PATH" | sed 's#//*#/#g')
+          REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
+          README_PATH="$(echo "${REPO_PATH}/readme" | sed 's#//*#/#g')"
 
-          README_PATH="${REPO_PATH}/readme"
-
-          echo "📂 BASE_PATH_SAFE: ${BASE_PATH_SAFE}"
+          echo "📂 BASE_PATH: ${BASE_PATH}"
           echo "📄 REPO_PATH: ${REPO_PATH}"
           echo "📘 README_PATH: ${README_PATH}"
 
@@ -429,10 +427,8 @@ jobs:
           # ------------------------------------------------------------
           # 1️⃣ Construir caminho REPO_PATH e CHANGELOG_PATH
           # ------------------------------------------------------------
-          REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
-          REPO_PATH=$(echo "$REPO_PATH" | sed 's#//*#/#g')
-
-          CHANGELOG_PATH="${REPO_PATH}/changelog"
+          REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
+          CHANGELOG_PATH="$(echo "${REPO_PATH}/changelog" | sed 's#//*#/#g')"
           echo "📄 CHANGELOG_PATH: ${CHANGELOG_PATH}"
 
           # ------------------------------------------------------------
@@ -516,8 +512,7 @@ jobs:
           set -euo pipefail
           echo "🔍 Querying Wiki.js for existing pages..."
 
-          REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
-          REPO_PATH=$(echo "$REPO_PATH" | sed 's#//*#/#g')
+          REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
 
           QUERY='query ($locale: String!) { pages { list(locale: $locale) { id title path } } }'
           JSON_PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" '{query: $q, variables: { locale: $loc }}')
@@ -541,7 +536,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          DOC_ROOT="${BASE_PATH_SAFE}/${REPO_NAME}/documentation/"
+          REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
+          DOC_ROOT="$(echo "${REPO_PATH}/documentation/" | sed 's#//*#/#g')"
 
           # List all documentation files from the output
           docs_files=(${{ needs.check-pages-folders.outputs.docs_files }})
@@ -648,8 +644,8 @@ jobs:
           set -euo pipefail
           echo "🔍 Searching README page in Wiki.js..."
 
-          REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
-          REPO_PATH=$(echo "$REPO_PATH" | sed 's#//*#/#g')
+          REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
+          README_PATH="$(echo "${REPO_PATH}/readme" | sed 's#//*#/#g')"
 
           QUERY='query ($locale: String!) { pages { list(locale: $locale) { id path title } } }'
           JSON_PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" '{query: $q, variables: { locale: $loc }}')
@@ -659,7 +655,7 @@ jobs:
             -H "Content-Type: application/json" \
             --data "$JSON_PAYLOAD")
 
-          PAGE_ID=$(echo "$RESULT" | jq -r --arg path "${REPO_PATH}/readme" \
+          PAGE_ID=$(echo "$RESULT" | jq -r --arg path "$README_PATH" \
                      '.data.pages.list[] | select(.path == $path) | .id')
 
           if [ -z "$PAGE_ID" ] || [ "$PAGE_ID" = "null" ]; then
@@ -731,8 +727,8 @@ jobs:
           set -euo pipefail
           echo "🔍 Searching CHANGELOG page in Wiki.js..."
 
-          REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
-          REPO_PATH=$(echo "$REPO_PATH" | sed 's#//*#/#g')
+          REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
+          CHANGELOG_PATH="$(echo "${REPO_PATH}/changelog" | sed 's#//*#/#g')"
 
           QUERY='query ($locale: String!) { pages { list(locale: $locale) { id path title } } }'
           JSON_PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" '{query: $q, variables: { locale: $loc }}')
@@ -742,7 +738,7 @@ jobs:
             -H "Content-Type: application/json" \
             --data "$JSON_PAYLOAD")
 
-          PAGE_ID=$(echo "$RESULT" | jq -r --arg path "${REPO_PATH}/changelog" \
+          PAGE_ID=$(echo "$RESULT" | jq -r --arg path "$CHANGELOG_PATH" \
                      '.data.pages.list[] | select(.path == $path) | .id')
 
           if [ -z "$PAGE_ID" ] || [ "$PAGE_ID" = "null" ]; then
