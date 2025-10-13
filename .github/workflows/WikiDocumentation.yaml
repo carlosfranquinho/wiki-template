@@ -700,6 +700,11 @@ jobs:
         env:
           WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN_WIKILAB2 }}
         run: |
+          if [ -z "$WIKI_API_TOKEN" ]; then
+            echo "ERROR: WIKI_API_TOKEN is not set. Please configure the appropriate secret for Wiki uploads."
+            exit 1
+          fi
+
           TRIMMED_URL="${WIKI_URL%/}"
           if [[ "$TRIMMED_URL" =~ /graphql$ ]]; then
             GRAPHQL_URL="$TRIMMED_URL"
@@ -756,6 +761,7 @@ jobs:
           ensure_folder_path() {
             local parent_id="$1"
             local path="$2"
+            local allow_create="${3:-true}"
 
             if ! [[ "$parent_id" =~ ^[0-9]+$ ]]; then
               echo "ERROR: ensure_folder_path requires numeric parent id (received: '$parent_id')." >&2
@@ -766,12 +772,14 @@ jobs:
 
             local IFS='/'
             local parts=()
+            local current_path=""
             read -r -a parts <<< "$path"
             for seg in "${parts[@]}"; do
               [ -z "$seg" ] && continue
               local seg_norm seg_slug
               seg_norm="$(normalize_case "$seg")"
               seg_slug="$(slugify "$seg")"
+              current_path="${current_path:+${current_path}/}$seg"
 
               QUERY=$(build_folders_query "$parent_id")
               JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
@@ -811,6 +819,11 @@ jobs:
                   exit 1
                 fi
                 continue
+              fi
+
+              if [ "$allow_create" != "true" ]; then
+                echo "ERROR: Required folder segment '$current_path' was not found under parent id $1. Create it manually or adjust BASE_PATH."
+                exit 1
               fi
 
               echo "Creating missing folder '$seg' under parent $parent_id"
@@ -889,7 +902,7 @@ jobs:
           base_path="${BASE_PATH%/}"
           if [ -n "$base_path" ]; then
             echo "Ensuring base path '$base_path' exists under parent $parent_id"
-            parent_id="$(ensure_folder_path "$parent_id" "$base_path")"
+            parent_id="$(ensure_folder_path "$parent_id" "$base_path" "false")"
             echo "Base path resolved to folder id $parent_id"
           fi
 
@@ -1014,6 +1027,11 @@ jobs:
         env:
           WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN_WIKILAB2 }}
         run: |
+          if [ -z "$WIKI_API_TOKEN" ]; then
+            echo "ERROR: WIKI_API_TOKEN is not set. Please configure the appropriate secret for Wiki uploads."
+            exit 1
+          fi
+
           TRIMMED_URL="${WIKI_URL%/}"
           if [[ "$TRIMMED_URL" =~ /graphql$ ]]; then
             GRAPHQL_URL="$TRIMMED_URL"
@@ -1077,6 +1095,7 @@ jobs:
           ensure_folder_path() {
             local parent_id="$1"
             local path="$2"
+            local allow_create="${3:-true}"
 
             if ! [[ "$parent_id" =~ ^[0-9]+$ ]]; then
               echo "ERROR: ensure_folder_path requires numeric parent id (received: '$parent_id')." >&2
@@ -1085,12 +1104,14 @@ jobs:
 
             local IFS='/'
             local parts=()
+            local current_path=""
             read -r -a parts <<< "$path"
             for seg in "${parts[@]}"; do
               [ -z "$seg" ] && continue
               local seg_norm seg_slug
               seg_norm="$(normalize_case "$seg")"
               seg_slug="$(slugify "$seg")"
+              current_path="${current_path:+${current_path}/}$seg"
 
               QUERY=$(build_folders_query "$parent_id")
               JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
@@ -1130,6 +1151,11 @@ jobs:
                   exit 1
                 fi
                 continue
+              fi
+
+              if [ "$allow_create" != "true" ]; then
+                echo "ERROR: Required folder segment '$current_path' was not found under parent id $1. Create it manually or adjust the path."
+                exit 1
               fi
 
               echo "Creating folder '$seg' under parent $parent_id"
