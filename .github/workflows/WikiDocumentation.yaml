@@ -829,7 +829,7 @@ jobs:
 
           # === CONFIGURAÇÃO ===
           APP_NAME="${APP_NAME,,}"  # lowercase
-          ASSET_FOLDER_PATH="Pedro/Aplicacoes/${APP_NAME}/documentation"
+          ASSET_FOLDER_PATH="${BASE_PATH}/${APP_NAME}/documentation"
 
           BASE_URL="${WIKI_URL%/}"
           if [[ "$BASE_URL" =~ /graphql$ ]]; then
