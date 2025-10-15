@@ -248,6 +248,8 @@ jobs:
 
       - name: Create Documentation Missing Files
         run: |
+          set -euo pipefail
+
           REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
           DOC_PREFIX="$(echo "${REPO_PATH}/documentation/" | sed 's#//*#/#g')"
 
@@ -257,13 +259,18 @@ jobs:
 
           for FILE in "${missing_files[@]}"; do
             echo "  • Will create: $FILE"
-            # Define source markdown file
             src_md="documentation/$(basename "$FILE").md"
 
-            # Read Content from the source markdown file
+            # Corrigir paths de imagens antes de ler o conteúdo
+            echo "🔧 Corrigindo paths de imagens em $src_md"
+            ASSET_PREFIX="/${BASE_PATH_SAFE}/${REPO_NAME}/documentation/"
+            sed -i -E "s#\!\[([^\]]*)\]\(((\./|\.\./)?documentation/[^)]+)\)#![\1](${ASSET_PREFIX}\3)#g" "$src_md"
+            sed -i -E "s#^(\[[^]]+\]:\s*)(\./|\.\./)?documentation/#\1${ASSET_PREFIX}#g" "$src_md"
+
+            # Ler o conteúdo corrigido
             CONTENT=$(<"$src_md")
 
-            # Rewrite links just in case (maybe not needed cause its already at the doc folder)
+            # Limpeza adicional dos links de markdown para outros .md internos (mantém só ./documentation)
             CONTENT=$(
               printf '%s\n' "$CONTENT" | sed -E \
                 -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
@@ -271,18 +278,14 @@ jobs:
                 -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md([?#][^)]*)\)#](./documentation/\1\2)#g' \
                 -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
             )
-            
+
             CONTENT_JSON=$(jq -n --arg c "$CONTENT" '$c')
 
-            # Build GraphQL query
             TITLE="$(basename "$FILE")"
             echo "    - Title: $TITLE"
 
-            # Build GraphQL query in a variable (no expansion inside)
             QUERY='mutation ($content: String!, $locale: String!, $path: String!, $title: String!) { pages { create(path: $path, title: $title, content: $content, editor: "markdown", isPrivate: false, isPublished: true, locale: $locale, tags: [], description: "") { responseResult { succeeded slug message } page { id title path updatedAt } } } }'
 
-
-            # Build payload: pass the query + variables; jq escapes values safely
             JSON_PAYLOAD=$(jq -n \
               --arg q "$QUERY" \
               --arg content "$CONTENT" \
@@ -310,8 +313,7 @@ jobs:
               VAR_NAME="WIKI_${TITLE_SAFE}_ID"
 
               echo "Saving $VAR_NAME=$PAGE_ID to repository variables…"
-
-              #gh variable set "$VAR_NAME" --body "$PAGE_ID"
+              # gh variable set "$VAR_NAME" --body "$PAGE_ID"
             else
               echo "⚠️ Failed to create: $FILE"
               echo "$RESULT" | jq .errors
