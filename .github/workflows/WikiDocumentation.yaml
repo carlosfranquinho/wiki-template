@@ -805,7 +805,12 @@ jobs:
           WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
         run: |
           set -euo pipefail
+          
+          # Preparar variáveis de ambiente
+          REPO_NAME="${GITHUB_REPOSITORY##*/}"
+          REPO_NAME="${REPO_NAME,,}" # lowercase
           BASE_URL="${WIKI_URL%/}"
+
           if [[ "$BASE_URL" =~ /graphql$ ]]; then
             GRAPHQL_URL="$BASE_URL"
             BASE_URL="${BASE_URL%/graphql}"
@@ -816,103 +821,49 @@ jobs:
             UPLOAD_URL="${BASE_URL}/u"
           fi
 
-          if [ -z "${REPO_NAME:-}" ]; then
-            echo "ERROR: REPO_NAME environment variable is empty. Ensure previous steps exported it."
+          # Query para verificar se a pasta já existe
+          QUERY_TEMPLATE='query { assetFolders { list(parentFolderId: $PARENT_FOLDER_ID) { id name } } }'
+          QUERY=$(echo "$QUERY_TEMPLATE" | sed "s/\$PARENT_FOLDER_ID/$PARENT_FOLDER_ID/g")
+          JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
+
+          RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
+            -H "Authorization: Bearer $WIKI_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$JSON")
+
+          if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
+            echo "❌ ERRO: resposta não é JSON:"
+            echo "$RESULT"
             exit 1
           fi
 
-          call_graphql() {
-            local payload="$1"
-            curl -s -X POST "$GRAPHQL_URL" \
+          FOLDER_ID=$(echo "$RESULT" | jq -r --arg NAME "$REPO_NAME" '.data.assetFolders.list[] | select(.name == $NAME) | .id')
+
+          if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
+            echo "📁 Pasta '$REPO_NAME' não encontrada, a criar..."
+
+            MUTATION_TEMPLATE='mutation { assetFolders { create(parentFolderId: $PARENT_FOLDER_ID, slug: "$REPO_NAME", name: "$REPO_NAME") { responseResult { message succeeded }, id } } }'
+            MUTATION=$(echo "$MUTATION_TEMPLATE" | sed "s/\$PARENT_FOLDER_ID/$PARENT_FOLDER_ID/g" | sed "s/\$REPO_NAME/$REPO_NAME/g")
+            JSON=$(jq -n --arg q "$MUTATION" '{ query: $q }')
+
+            RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -H "Content-Type: application/json" \
-              --data "$payload"
-          }
+              --data "$JSON")
 
-          sanitize_slug() {
-            local slug
-            slug=$(echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g')
-            slug=$(echo "$slug" | sed 's/-\{2,\}/-/g; s/^-//; s/-$//')
-            if [ -z "$slug" ]; then
-              slug="assets-folder"
-            fi
-            echo "$slug"
-          }
-
-          ensure_folder() {
-            local parent="$1"
-            local name="$2"
-            local slug="$3"
-
-            local folders_query='query($parent: Int!) { assets { folders(parentFolderId: $parent) { id name slug } } }'
-            local payload
-            payload=$(jq -n \
-              --arg q "$folders_query" \
-              --argjson parent "$parent" \
-              '{ query: $q, variables: { parent: $parent } }')
-
-            local result
-            result=$(call_graphql "$payload")
-            if ! echo "$result" | jq . >/dev/null 2>&1; then
-              echo "ERROR: Non-JSON response when querying folders (parent $parent):"
-              echo "$result"
+            if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
+              echo "❌ ERRO: resposta não é JSON na criação da pasta:"
+              echo "$RESULT"
               exit 1
             fi
 
-            local folder_id
-            folder_id=$(echo "$result" | jq -r --arg name "$name" --arg slug "$slug" '
-              (.data.assets.folders // [])[]
-              | select(
-                  (.name // "" | ascii_downcase) == ($name | ascii_downcase)
-                  or (.slug // "" | ascii_downcase) == ($slug | ascii_downcase)
-                )
-              | .id' | head -n 1)
-            if [ -n "$folder_id" ] && [ "$folder_id" != "null" ]; then
-              echo "$folder_id"
-              return 0
-            fi
+            FOLDER_ID=$(echo "$RESULT" | jq -r '.data.assetFolders.create.id')
+            echo "✅ Pasta criada com ID $FOLDER_ID"
+          else
+            echo "✅ Pasta já existe com ID $FOLDER_ID"
+          fi
 
-            local create_mutation='mutation($parent: Int!, $slug: String!, $name: String!) { assets { createFolder(parentFolderId: $parent, slug: $slug, name: $name) { responseResult { succeeded message }, folder { id name slug } } } }'
-            payload=$(jq -n \
-              --arg q "$create_mutation" \
-              --argjson parent "$parent" \
-              --arg slug "$slug" \
-              --arg name "$name" \
-              '{ query: $q, variables: { parent: $parent, slug: $slug, name: $name } }')
-
-            result=$(call_graphql "$payload")
-            if ! echo "$result" | jq . >/dev/null 2>&1; then
-              echo "ERROR: Non-JSON response when creating folder '$name' (parent $parent):"
-              echo "$result"
-              exit 1
-            fi
-
-            local succeeded
-            succeeded=$(echo "$result" | jq -r '.data.assets.createFolder.responseResult.succeeded // "false"')
-            if [ "$succeeded" != "true" ]; then
-              echo "ERROR: Wiki.js reported failure when creating folder '$name' (parent $parent):"
-              echo "$result" | jq .
-              exit 1
-            fi
-
-            folder_id=$(echo "$result" | jq -r '.data.assets.createFolder.folder.id // .data.assets.createFolder.id')
-            if [ -z "$folder_id" ] || [ "$folder_id" = "null" ]; then
-              echo "ERROR: Folder ID missing after creating '$name' (parent $parent)."
-              echo "$result" | jq .
-              exit 1
-            fi
-            echo "$folder_id"
-          }
-
-          repo_slug=$(sanitize_slug "$REPO_NAME")
-          repo_folder_id=$(ensure_folder "$PARENT_FOLDER_ID" "$REPO_NAME" "$repo_slug")
-          echo "📁 Repository asset folder ID: $repo_folder_id"
-
-          documentation_folder_id=$(ensure_folder "$repo_folder_id" "documentation" "documentation")
-          echo "📁 Documentation asset folder ID: $documentation_folder_id"
-
-          echo "FOLDER_ID=$documentation_folder_id" >> "$GITHUB_ENV"
-          echo "DOC_ROOT_FOLDER_ID=$documentation_folder_id" >> "$GITHUB_ENV"
+          echo "FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
           echo "UPLOAD_URL=$UPLOAD_URL" >> "$GITHUB_ENV"
           echo "GRAPHQL_URL=$GRAPHQL_URL" >> "$GITHUB_ENV"
 
