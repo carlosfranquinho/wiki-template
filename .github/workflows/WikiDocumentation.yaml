@@ -782,92 +782,117 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: "List Media Files in documentation/ (non-md files)"
+      - name: Detect Media Files
+        id: detect
         run: |
           MEDIA_FILES=$(find documentation/ -type f ! -name "*.md")
-          MEDIA_FILES=($MEDIA_FILES)  # Convert to array
-          echo "Media files found for upload: ${MEDIA_FILES[*]}"
-          echo "MEDIA_FILES=${MEDIA_FILES[*]}" >> "$GITHUB_ENV"
+          echo "MEDIA_FILES<<EOF" >> "$GITHUB_ENV"
+          echo "$MEDIA_FILES" >> "$GITHUB_ENV"
+          echo "EOF" >> "$GITHUB_ENV"
+          echo "Ficheiros encontrados:"
+          echo "$MEDIA_FILES"
 
-      - name: Create Target Folder in Wiki.js
+      - name: Get Repository Name
+        id: repo
+        run: |
+          repo_name="${GITHUB_REPOSITORY##*/}"
+          echo "REPO_NAME=${repo_name,,}" >> "$GITHUB_ENV"
+          echo "Repository name: ${repo_name,,}"
+
+      - name: Create folder in Wiki.js (if needed)
+        id: folder
+        env:
+          WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
         run: |
           set -euo pipefail
-          echo "🔧 Preparing Wiki folder structure for media upload..."
-
-          REPO_PATH="${BASE_PATH_SAFE}/${REPO_NAME}"
-          REPO_PATH=$(echo "$REPO_PATH" | sed 's#//*#/#g')
-
-          echo "📂 Normalized path: ${REPO_PATH}"
-
-          # ------------------------------------------------------------
-          # 2️⃣ Listar pastas existentes no Wiki.js
-          # ------------------------------------------------------------
-          FOLDER_QUERY='query { assets { folders(parentFolderId: 1) { id name slug } } }'
-          JSON_PAYLOAD=$(jq -n --arg q "$FOLDER_QUERY" '{ query: $q }')
-
-          RESULT=$(curl -sS -X POST "$WIKI_URL" \
-            -H "Authorization: Bearer $WIKI_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            --data "$JSON_PAYLOAD")
-
-          echo "📋 Existing folders under parent 1:"
-          echo "$RESULT" | jq '.data.assets.folders[] | {id, name, slug}'
-
-          # ------------------------------------------------------------
-          # 3️⃣ Verificar (ou criar) a pasta principal do repositório
-          # ------------------------------------------------------------
-          repo_name="${REPO_NAME,,}"
-          repo_slug=$(echo "$repo_name" | sed 's/[^a-z0-9_-]/_/g')
-
-          echo "🔎 Checking for folder: $repo_slug"
-
-          FOLDER_ID=$(echo "$RESULT" | jq -r --arg SLUG "$repo_slug" '.data.assets.folders[] | select(.slug == $SLUG or .name == $SLUG) | .id')
-
-          if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
-            echo "📁 Folder not found. Creating folder '${repo_slug}'..."
-            
-            MUTATION=$(cat <<GRAPHQL
-            mutation {
-              assets {
-                createFolder(parentFolderId: 1, slug: "${repo_slug}", name: "${repo_name}") {
-                  responseResult { succeeded message }
-                  folder { id name slug }
-                }
-              }
-            }
-          GRAPHQL
-          )
-            JSON_PAYLOAD=$(jq -n --arg q "$MUTATION" '{ query: $q }')
-
-            RESULT=$(curl -sS -X POST "$WIKI_URL" \
-              -H "Authorization: Bearer $WIKI_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data "$JSON_PAYLOAD")
-
-            echo "$RESULT" | jq .
-
-            FOLDER_ID=$(echo "$RESULT" | jq -r '.data.assets.createFolder.folder.id')
-            if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
-              echo "❌ Failed to create target folder '${repo_slug}'."
-              echo "$RESULT" | jq .
-              exit 1
-            fi
-            echo "✅ Created new folder '${repo_slug}' with ID: ${FOLDER_ID}"
+          BASE_URL="${WIKI_URL%/}"
+          if [[ "$BASE_URL" =~ /graphql$ ]]; then
+            GRAPHQL_URL="$BASE_URL"
+            BASE_URL="${BASE_URL%/graphql}"
+            BASE_URL="${BASE_URL%/}"
+            UPLOAD_URL="${BASE_URL}/u"
           else
-            echo "✅ Folder '${repo_slug}' already exists with ID: ${FOLDER_ID}"
+            GRAPHQL_URL="${BASE_URL}/graphql"
+            UPLOAD_URL="${BASE_URL}/u"
           fi
 
-          echo "FOLDER_ID=${FOLDER_ID}" >> "$GITHUB_ENV"
+          QUERY_TEMPLATE='query { assets { folders(parentFolderId: $PARENT_FOLDER_ID) { id name } } }'
+          QUERY=$(echo "$QUERY_TEMPLATE" | sed "s/\$PARENT_FOLDER_ID/$PARENT_FOLDER_ID/g")
+          JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
+          RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
+            -H "Authorization: Bearer $WIKI_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$JSON")
+          if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
+            echo "ERROR: Non-JSON response when querying folders:"
+            echo "$RESULT"
+            exit 1
+          fi
+          FOLDER_ID=$(echo "$RESULT" | jq -r --arg NAME "$REPO_NAME" '.data.assets.folders[] | select(.name == $NAME) | .id')
+          if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
+            echo "Folder not found, creating..."
+            MUTATION_TEMPLATE='mutation { assets { createFolder(parentFolderId: $PARENT_FOLDER_ID, slug: "$REPO_NAME", name: "$REPO_NAME") { responseResult { message succeeded }, id } } }'
+            MUTATION=$(echo "$MUTATION_TEMPLATE" | sed "s/\$PARENT_FOLDER_ID/$PARENT_FOLDER_ID/g" | sed "s/\$REPO_NAME/$REPO_NAME/g")
+            JSON=$(jq -n --arg q "$MUTATION" '{ query: $q }')
+            RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
+              -H "Authorization: Bearer $WIKI_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "$JSON")
+            if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
+              echo "ERROR: Non-JSON response when creating folder:"
+              echo "$RESULT"
+              exit 1
+            fi
+            FOLDER_ID=$(echo "$RESULT" | jq -r '.data.assets.createFolder.id')
+            echo "Folder created with ID $FOLDER_ID"
+          else
+            echo "Folder already exists with ID $FOLDER_ID"
+          fi
+          echo "FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
+          echo "UPLOAD_URL=$UPLOAD_URL" >> "$GITHUB_ENV"
+          echo "GRAPHQL_URL=$GRAPHQL_URL" >> "$GITHUB_ENV"
 
-      - name: Start Python Upload Script
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.x'
-
-      - name: Install dependencies
-        run: pip install requests
-
-      - name: Upload Media Files to Wiki.js
-        working-directory: .github/scripts
+      - name: Upload Media Files
+        env:
+          WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
         run: |
-          python upload_media.py
+          set -euo pipefail
+          GRAPHQL_URL="${GRAPHQL_URL:-$WIKI_URL}"
+          UPLOAD_URL="${UPLOAD_URL:-${WIKI_URL%/}/u}"
+          if [[ "$UPLOAD_URL" =~ /graphql/u$ ]]; then
+            TRIMMED="${UPLOAD_URL%/graphql/u}"
+            TRIMMED="${TRIMMED%/}"
+            UPLOAD_URL="${TRIMMED}/u"
+          fi
+
+          if [ -z "${MEDIA_FILES:-}" ]; then
+            echo "No media files to upload."
+            exit 0
+          fi
+
+          echo "$MEDIA_FILES" | while IFS= read -r filepath || [ -n "$filepath" ]; do
+            [ -z "$filepath" ] && continue
+            echo "Uploading $filepath"
+            RESPONSE_WITH_STATUS=$(curl -s -w "\n%{http_code}" -X POST "$UPLOAD_URL" \
+              -H "Authorization: Bearer $WIKI_API_TOKEN" \
+              -F "mediaUpload={\"folderId\":$FOLDER_ID}" \
+              -F "mediaUpload=@$filepath")
+            HTTP_STATUS=$(echo "$RESPONSE_WITH_STATUS" | tail -n1)
+            BODY=$(echo "$RESPONSE_WITH_STATUS" | sed '$d')
+            if [[ "$HTTP_STATUS" =~ ^2 ]]; then
+              if echo "$BODY" | jq . >/dev/null 2>&1; then
+                echo "$BODY" | jq .
+              else
+                echo "Upload succeeded (HTTP $HTTP_STATUS) for file: $filepath"
+                echo "$BODY"
+              fi
+            else
+              echo "Upload failed (HTTP $HTTP_STATUS) for file: $filepath"
+              if echo "$BODY" | jq . >/dev/null 2>&1; then
+                echo "$BODY" | jq .
+              else
+                echo "$BODY"
+              fi
+              exit 1
+            fi
+          done
