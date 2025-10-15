@@ -799,19 +799,19 @@ jobs:
           echo "REPO_NAME=${repo_name,,}" >> "$GITHUB_ENV"
           echo "Repository name: ${repo_name,,}"
 
-      - name: Criar estrutura de pastas no Wiki.js
+      - name: Criar estrutura de pastas aninhadas no Wiki.js
         id: criar-pastas
         env:
           WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
         run: |
           set -euo pipefail
 
-          # Nome do repositório (pasta nível 1)
+          # === CONFIGURAÇÃO ===
           REPO_NAME="${GITHUB_REPOSITORY##*/}"
-          REPO_NAME="${REPO_NAME,,}"
+          REPO_NAME="${REPO_NAME,,}"  # lowercase
+          BASE_PATH_SAFE="Pedro/Aplicacoes"  # ou qualquer outra estrutura principal
+          FINAL_PATH="${BASE_PATH_SAFE}/${REPO_NAME}/documentation"
 
-          # Subpasta fixa (nível 2)
-          SUBFOLDER_NAME="documentation"
           BASE_URL="${WIKI_URL%/}"
 
           if [[ "$BASE_URL" =~ /graphql$ ]]; then
@@ -824,34 +824,27 @@ jobs:
             UPLOAD_URL="${BASE_URL}/u"
           fi
 
-          ### Função para obter ID de uma pasta com base no nome e parentId
+          # === Função: obter ID de pasta (com parentId e name) ===
           get_folder_id() {
             local parent_id="$1"
             local name="$2"
-            local QUERY
-            if [ -n "$parent_id" ]; then
-              QUERY="query { assets { folders(parentFolderId: $parent_id) { id name } } }"
-            else
-              QUERY="query { assets { folders { id name } } }"
-            fi
+            if [ -z "$parent_id" ]; then parent_id=0; fi
+            QUERY="query { assets { folders(parentFolderId: $parent_id) { id name } } }"
             JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
             RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data "$JSON")
-            echo "$RESULT" | jq -r --arg NAME "$name" '.data.assets.folders[] | select(.name == $NAME) | .id'
+            echo "$RESULT" | jq -r --arg NAME "$name" '.data.assets.folders[]? | select(.name == $NAME) | .id'
           }
 
-          ### Função para criar pasta
+          # === Função: criar pasta (com parentId, slug e name) ===
           create_folder() {
             local parent_id="$1"
             local slug="$2"
             local name="$3"
-            local ARG_PARENT=""
-            if [ -n "$parent_id" ]; then
-              ARG_PARENT="parentFolderId: $parent_id, "
-            fi
-            MUTATION="mutation { assets { createFolder(${ARG_PARENT}slug: \"$slug\", name: \"$name\") { responseResult { succeeded message } } } }"
+            if [ -z "$parent_id" ]; then parent_id=0; fi
+            MUTATION="mutation { assets { createFolder(parentFolderId: $parent_id, slug: \"$slug\", name: \"$name\") { responseResult { succeeded message } } } }"
             JSON=$(jq -n --arg q "$MUTATION" '{ query: $q }')
             RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
@@ -865,37 +858,31 @@ jobs:
             fi
           }
 
-          # Passo 1: Criar ou obter pasta do repositório (nível 1)
-          echo "🔍 A procurar pasta '$REPO_NAME' na raiz dos assets..."
-          PARENT_ID=""
-          REPO_FOLDER_ID=$(get_folder_id "$PARENT_ID" "$REPO_NAME")
+          # === Criação da estrutura hierárquica ===
+          echo "📁 A criar/verificar estrutura: $FINAL_PATH"
+          IFS='/' read -ra PARTS <<< "$FINAL_PATH"
+          CURRENT_PARENT=""
 
-          if [ -z "$REPO_FOLDER_ID" ]; then
-            echo "📁 Pasta '$REPO_NAME' não encontrada. A criar..."
-            create_folder "" "$REPO_NAME" "$REPO_NAME"
-            REPO_FOLDER_ID=$(get_folder_id "" "$REPO_NAME")
-          else
-            echo "✅ Pasta '$REPO_NAME' encontrada com ID $REPO_FOLDER_ID"
-          fi
+          for PART in "${PARTS[@]}"; do
+            echo "🔍 Procurando '$PART' dentro do parent ID '${CURRENT_PARENT:-0}'"
+            FOLDER_ID=$(get_folder_id "$CURRENT_PARENT" "$PART")
 
-          # Passo 2: Criar ou obter subpasta 'documentation' dentro da anterior
-          echo "🔍 A procurar subpasta '$SUBFOLDER_NAME' dentro de '$REPO_NAME'..."
-          DOC_FOLDER_ID=$(get_folder_id "$REPO_FOLDER_ID" "$SUBFOLDER_NAME")
+            if [ -z "$FOLDER_ID" ]; then
+              echo "📁 Pasta '$PART' não encontrada. A criar..."
+              create_folder "$CURRENT_PARENT" "$PART" "$PART"
+              FOLDER_ID=$(get_folder_id "$CURRENT_PARENT" "$PART")
+              echo "✅ Criada com ID $FOLDER_ID"
+            else
+              echo "✅ Já existe com ID $FOLDER_ID"
+            fi
 
-          if [ -z "$DOC_FOLDER_ID" ]; then
-            echo "📁 Subpasta '$SUBFOLDER_NAME' não encontrada. A criar..."
-            create_folder "$REPO_FOLDER_ID" "$SUBFOLDER_NAME" "$SUBFOLDER_NAME"
-            DOC_FOLDER_ID=$(get_folder_id "$REPO_FOLDER_ID" "$SUBFOLDER_NAME")
-          else
-            echo "✅ Subpasta '$SUBFOLDER_NAME' encontrada com ID $DOC_FOLDER_ID"
-          fi
+            CURRENT_PARENT="$FOLDER_ID"
+          done
 
-          # Exportar variáveis para steps seguintes
-          echo "FOLDER_ID=$DOC_FOLDER_ID" >> "$GITHUB_ENV"
+          echo "🎯 FOLDER_ID final = $FOLDER_ID"
+          echo "FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
           echo "UPLOAD_URL=$UPLOAD_URL" >> "$GITHUB_ENV"
           echo "GRAPHQL_URL=$GRAPHQL_URL" >> "$GITHUB_ENV"
-
-          echo "✅ Estrutura criada: $REPO_NAME/$SUBFOLDER_NAME (ID final: $DOC_FOLDER_ID)"
 
       - name: Upload Media Files
         env:
