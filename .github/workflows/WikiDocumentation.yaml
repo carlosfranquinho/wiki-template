@@ -5,7 +5,7 @@ name: WikiDocumentation
 #     run-docs-pipeline:
 #       uses: org/repo/.github/workflows/WikiDocumentation.yaml@main
 #       with:
-#         app_name: "wiki-upload-test"
+#         app_name: "wiki-upload-test "
 
 on:
   workflow_call:
