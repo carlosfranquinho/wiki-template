@@ -830,7 +830,13 @@ jobs:
           }
 
           sanitize_slug() {
-            echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g'
+            local slug
+            slug=$(echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g')
+            slug=$(echo "$slug" | sed 's/-\{2,\}/-/g; s/^-//; s/-$//')
+            if [ -z "$slug" ]; then
+              slug="assets-folder"
+            fi
+            echo "$slug"
           }
 
           ensure_folder() {
@@ -889,7 +895,7 @@ jobs:
               exit 1
             fi
 
-            folder_id=$(echo "$result" | jq -r '.data.assets.createFolder.folder.id')
+            folder_id=$(echo "$result" | jq -r '.data.assets.createFolder.folder.id // .data.assets.createFolder.id')
             if [ -z "$folder_id" ] || [ "$folder_id" = "null" ]; then
               echo "ERROR: Folder ID missing after creating '$name' (parent $parent)."
               echo "$result" | jq .
@@ -943,7 +949,13 @@ jobs:
           }
 
           sanitize_slug() {
-            echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g'
+            local slug
+            slug=$(echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g')
+            slug=$(echo "$slug" | sed 's/-\{2,\}/-/g; s/^-//; s/-$//')
+            if [ -z "$slug" ]; then
+              slug="assets-folder"
+            fi
+            echo "$slug"
           }
 
           folders_query='query($parent: Int!) { assets { folders(parentFolderId: $parent) { id name slug } } }'
@@ -1004,7 +1016,7 @@ jobs:
               echo "$result" | jq .
               exit 1
             fi
-            folder_id=$(echo "$result" | jq -r '.data.assets.createFolder.folder.id')
+            folder_id=$(echo "$result" | jq -r '.data.assets.createFolder.folder.id // .data.assets.createFolder.id')
             if [ -z "$folder_id" ] || [ "$folder_id" = "null" ]; then
               echo "ERROR: Folder ID missing after creating '$name' (parent $parent)."
               echo "$result" | jq .
