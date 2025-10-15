@@ -805,10 +805,9 @@ jobs:
           WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
         run: |
           set -euo pipefail
-          
-          # Preparar variáveis de ambiente
+
           REPO_NAME="${GITHUB_REPOSITORY##*/}"
-          REPO_NAME="${REPO_NAME,,}" # lowercase
+          REPO_NAME="${REPO_NAME,,}"
           BASE_URL="${WIKI_URL%/}"
 
           if [[ "$BASE_URL" =~ /graphql$ ]]; then
@@ -821,9 +820,8 @@ jobs:
             UPLOAD_URL="${BASE_URL}/u"
           fi
 
-          # Query para verificar se a pasta já existe
-          QUERY_TEMPLATE='query { assetFolders { list(parentFolderId: $PARENT_FOLDER_ID) { id name } } }'
-          QUERY=$(echo "$QUERY_TEMPLATE" | sed "s/\$PARENT_FOLDER_ID/$PARENT_FOLDER_ID/g")
+          # 1. Verificar se pasta já existe
+          QUERY="query { assets { folders(parentFolderId: $PARENT_FOLDER_ID) { id name } } }"
           JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
 
           RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
@@ -832,18 +830,18 @@ jobs:
             --data "$JSON")
 
           if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
-            echo "❌ ERRO: resposta não é JSON:"
+            echo "❌ ERRO: resposta não é JSON"
             echo "$RESULT"
             exit 1
           fi
 
-          FOLDER_ID=$(echo "$RESULT" | jq -r --arg NAME "$REPO_NAME" '.data.assetFolders.list[] | select(.name == $NAME) | .id')
+          FOLDER_ID=$(echo "$RESULT" | jq -r --arg NAME "$REPO_NAME" '.data.assets.folders[] | select(.name == $NAME) | .id')
 
+          # 2. Se não existir, criar pasta e voltar a correr query
           if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
-            echo "📁 Pasta '$REPO_NAME' não encontrada, a criar..."
+            echo "📁 Pasta não encontrada, a criar..."
 
-            MUTATION_TEMPLATE='mutation { assetFolders { create(parentFolderId: $PARENT_FOLDER_ID, slug: "$REPO_NAME", name: "$REPO_NAME") { responseResult { message succeeded }, id } } }'
-            MUTATION=$(echo "$MUTATION_TEMPLATE" | sed "s/\$PARENT_FOLDER_ID/$PARENT_FOLDER_ID/g" | sed "s/\$REPO_NAME/$REPO_NAME/g")
+            MUTATION="mutation { assets { createFolder(parentFolderId: $PARENT_FOLDER_ID, slug: \"$REPO_NAME\", name: \"$REPO_NAME\") { responseResult { succeeded message } } } }"
             JSON=$(jq -n --arg q "$MUTATION" '{ query: $q }')
 
             RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
@@ -851,18 +849,31 @@ jobs:
               -H "Content-Type: application/json" \
               --data "$JSON")
 
-            if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
-              echo "❌ ERRO: resposta não é JSON na criação da pasta:"
-              echo "$RESULT"
+            echo "$RESULT" | jq .
+
+            SUCCESS=$(echo "$RESULT" | jq -r '.data.assets.createFolder.responseResult.succeeded')
+            if [ "$SUCCESS" != "true" ]; then
+              echo "❌ ERRO: falha ao criar pasta"
               exit 1
             fi
 
-            FOLDER_ID=$(echo "$RESULT" | jq -r '.data.assetFolders.create.id')
-            echo "✅ Pasta criada com ID $FOLDER_ID"
-          else
-            echo "✅ Pasta já existe com ID $FOLDER_ID"
+            # Repetir query para obter o novo FOLDER_ID
+            echo "🔄 A obter ID da pasta criada..."
+            JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
+            RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
+              -H "Authorization: Bearer $WIKI_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "$JSON")
+
+            FOLDER_ID=$(echo "$RESULT" | jq -r --arg NAME "$REPO_NAME" '.data.assets.folders[] | select(.name == $NAME) | .id')
           fi
 
+          if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
+            echo "❌ ERRO: FOLDER_ID continua vazio após criação"
+            exit 1
+          fi
+
+          echo "✅ Pasta confirmada com ID $FOLDER_ID"
           echo "FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
           echo "UPLOAD_URL=$UPLOAD_URL" >> "$GITHUB_ENV"
           echo "GRAPHQL_URL=$GRAPHQL_URL" >> "$GITHUB_ENV"
