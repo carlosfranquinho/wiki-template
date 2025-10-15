@@ -806,11 +806,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          # === CONFIGURAÇÃO ===
+          # === CONFIGURAÇÃO CORRETA ===
           REPO_NAME="${GITHUB_REPOSITORY##*/}"
           REPO_NAME="${REPO_NAME,,}"  # lowercase
-          BASE_PATH_SAFE="Pedro/Aplicacoes"  # ou qualquer outra estrutura principal
-          FINAL_PATH="${BASE_PATH_SAFE}/${REPO_NAME}/documentation"
+          ASSET_FOLDER_PATH="Pedro/Aplicacoes/${REPO_NAME}/documentation"
 
           BASE_URL="${WIKI_URL%/}"
 
@@ -859,8 +858,8 @@ jobs:
           }
 
           # === Criação da estrutura hierárquica ===
-          echo "📁 A criar/verificar estrutura: $FINAL_PATH"
-          IFS='/' read -ra PARTS <<< "$FINAL_PATH"
+          echo "📁 A criar/verificar estrutura: $ASSET_FOLDER_PATH"
+          IFS='/' read -ra PARTS <<< "$ASSET_FOLDER_PATH"
           CURRENT_PARENT=""
 
           for PART in "${PARTS[@]}"; do
