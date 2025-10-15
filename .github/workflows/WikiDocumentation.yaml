@@ -18,6 +18,10 @@ on:
         description: "Base folder path in the Wiki assets (e.g. 'Pedro/Aplicações')."
         required: true
         type: string
+    secrets:
+      WIKI_API_TOKEN:
+        description: "API token for Wiki.js GraphQL access"
+        required: true
 
 permissions:
   contents: read
