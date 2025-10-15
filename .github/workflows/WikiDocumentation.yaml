@@ -250,6 +250,8 @@ jobs:
         run: |
           set -euo pipefail
 
+          BASE_PATH_SAFE="${{ needs.setup-env.outputs.BASE_PATH_SAFE }}"
+
           REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
           DOC_PREFIX="$(echo "${REPO_PATH}/documentation/" | sed 's#//*#/#g')"
 
