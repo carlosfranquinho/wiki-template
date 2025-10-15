@@ -799,15 +799,19 @@ jobs:
           echo "REPO_NAME=${repo_name,,}" >> "$GITHUB_ENV"
           echo "Repository name: ${repo_name,,}"
 
-      - name: Create folder in Wiki.js (if needed)
-        id: folder
+      - name: Criar estrutura de pastas no Wiki.js
+        id: criar-pastas
         env:
           WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
         run: |
           set -euo pipefail
 
+          # Nome do repositório (pasta nível 1)
           REPO_NAME="${GITHUB_REPOSITORY##*/}"
           REPO_NAME="${REPO_NAME,,}"
+
+          # Subpasta fixa (nível 2)
+          SUBFOLDER_NAME="documentation"
           BASE_URL="${WIKI_URL%/}"
 
           if [[ "$BASE_URL" =~ /graphql$ ]]; then
@@ -820,63 +824,78 @@ jobs:
             UPLOAD_URL="${BASE_URL}/u"
           fi
 
-          # 1. Verificar se pasta já existe
-          QUERY="query { assets { folders(parentFolderId: $PARENT_FOLDER_ID) { id name } } }"
-          JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
-
-          RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
-            -H "Authorization: Bearer $WIKI_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            --data "$JSON")
-
-          if ! echo "$RESULT" | jq . >/dev/null 2>&1; then
-            echo "❌ ERRO: resposta não é JSON"
-            echo "$RESULT"
-            exit 1
-          fi
-
-          FOLDER_ID=$(echo "$RESULT" | jq -r --arg NAME "$REPO_NAME" '.data.assets.folders[] | select(.name == $NAME) | .id')
-
-          # 2. Se não existir, criar pasta e voltar a correr query
-          if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
-            echo "📁 Pasta não encontrada, a criar..."
-
-            MUTATION="mutation { assets { createFolder(parentFolderId: $PARENT_FOLDER_ID, slug: \"$REPO_NAME\", name: \"$REPO_NAME\") { responseResult { succeeded message } } } }"
-            JSON=$(jq -n --arg q "$MUTATION" '{ query: $q }')
-
-            RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
-              -H "Authorization: Bearer $WIKI_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data "$JSON")
-
-            echo "$RESULT" | jq .
-
-            SUCCESS=$(echo "$RESULT" | jq -r '.data.assets.createFolder.responseResult.succeeded')
-            if [ "$SUCCESS" != "true" ]; then
-              echo "❌ ERRO: falha ao criar pasta"
-              exit 1
+          ### Função para obter ID de uma pasta com base no nome e parentId
+          get_folder_id() {
+            local parent_id="$1"
+            local name="$2"
+            local QUERY
+            if [ -n "$parent_id" ]; then
+              QUERY="query { assets { folders(parentFolderId: $parent_id) { id name } } }"
+            else
+              QUERY="query { assets { folders { id name } } }"
             fi
-
-            # Repetir query para obter o novo FOLDER_ID
-            echo "🔄 A obter ID da pasta criada..."
             JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
             RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data "$JSON")
+            echo "$RESULT" | jq -r --arg NAME "$name" '.data.assets.folders[] | select(.name == $NAME) | .id'
+          }
 
-            FOLDER_ID=$(echo "$RESULT" | jq -r --arg NAME "$REPO_NAME" '.data.assets.folders[] | select(.name == $NAME) | .id')
+          ### Função para criar pasta
+          create_folder() {
+            local parent_id="$1"
+            local slug="$2"
+            local name="$3"
+            local ARG_PARENT=""
+            if [ -n "$parent_id" ]; then
+              ARG_PARENT="parentFolderId: $parent_id, "
+            fi
+            MUTATION="mutation { assets { createFolder(${ARG_PARENT}slug: \"$slug\", name: \"$name\") { responseResult { succeeded message } } } }"
+            JSON=$(jq -n --arg q "$MUTATION" '{ query: $q }')
+            RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
+              -H "Authorization: Bearer $WIKI_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "$JSON")
+            echo "$RESULT" | jq .
+            SUCCESS=$(echo "$RESULT" | jq -r '.data.assets.createFolder.responseResult.succeeded')
+            if [ "$SUCCESS" != "true" ]; then
+              echo "❌ Erro a criar pasta '$name'"
+              exit 1
+            fi
+          }
+
+          # Passo 1: Criar ou obter pasta do repositório (nível 1)
+          echo "🔍 A procurar pasta '$REPO_NAME' na raiz dos assets..."
+          PARENT_ID=""
+          REPO_FOLDER_ID=$(get_folder_id "$PARENT_ID" "$REPO_NAME")
+
+          if [ -z "$REPO_FOLDER_ID" ]; then
+            echo "📁 Pasta '$REPO_NAME' não encontrada. A criar..."
+            create_folder "" "$REPO_NAME" "$REPO_NAME"
+            REPO_FOLDER_ID=$(get_folder_id "" "$REPO_NAME")
+          else
+            echo "✅ Pasta '$REPO_NAME' encontrada com ID $REPO_FOLDER_ID"
           fi
 
-          if [ -z "$FOLDER_ID" ] || [ "$FOLDER_ID" = "null" ]; then
-            echo "❌ ERRO: FOLDER_ID continua vazio após criação"
-            exit 1
+          # Passo 2: Criar ou obter subpasta 'documentation' dentro da anterior
+          echo "🔍 A procurar subpasta '$SUBFOLDER_NAME' dentro de '$REPO_NAME'..."
+          DOC_FOLDER_ID=$(get_folder_id "$REPO_FOLDER_ID" "$SUBFOLDER_NAME")
+
+          if [ -z "$DOC_FOLDER_ID" ]; then
+            echo "📁 Subpasta '$SUBFOLDER_NAME' não encontrada. A criar..."
+            create_folder "$REPO_FOLDER_ID" "$SUBFOLDER_NAME" "$SUBFOLDER_NAME"
+            DOC_FOLDER_ID=$(get_folder_id "$REPO_FOLDER_ID" "$SUBFOLDER_NAME")
+          else
+            echo "✅ Subpasta '$SUBFOLDER_NAME' encontrada com ID $DOC_FOLDER_ID"
           fi
 
-          echo "✅ Pasta confirmada com ID $FOLDER_ID"
-          echo "FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
+          # Exportar variáveis para steps seguintes
+          echo "FOLDER_ID=$DOC_FOLDER_ID" >> "$GITHUB_ENV"
           echo "UPLOAD_URL=$UPLOAD_URL" >> "$GITHUB_ENV"
           echo "GRAPHQL_URL=$GRAPHQL_URL" >> "$GITHUB_ENV"
+
+          echo "✅ Estrutura criada: $REPO_NAME/$SUBFOLDER_NAME (ID final: $DOC_FOLDER_ID)"
 
       - name: Upload Media Files
         env:
