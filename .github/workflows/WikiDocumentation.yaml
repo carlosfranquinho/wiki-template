@@ -822,9 +822,8 @@ jobs:
             UPLOAD_URL="${BASE_URL}/u"
           fi
 
-          # Função: slugificar um segmento de pasta (aprox. ao que a Wiki.js faz)
+          # Função: slugificar (imitando comportamento Wiki.js)
           slugify() {
-            # lowercase, espaços -> '-', remove tudo excepto [a-z0-9-_.]
             echo "$1" \
               | tr '[:upper:]' '[:lower:]' \
               | sed -E 's/[[:space:]]+/-/g' \
@@ -833,7 +832,7 @@ jobs:
               | sed -E 's/^-+|-+$//g'
           }
 
-          # Função: obter ID da pasta por parent + slug/name
+          # Função: obter ID da pasta
           get_folder_id() {
             local parent_id="$1"
             local name_raw="$2"
@@ -851,15 +850,15 @@ jobs:
               -H "Content-Type: application/json" \
               --data "$JSON")
 
-            # tenta por slug exato; fallback por name case-insensitive
+            # Match por slug exato, fallback por name lowercase
             echo "$RESULT" | jq -r --arg SLUG "$slug" --arg NAME_LC "$name_lc" '
               .data.assets.folders[]? 
-              | select((.slug == $SLUG) or ((.name|asciifold|ascii_downcase) == $NAME_LC)) 
+              | select((.slug == $SLUG) or ((.name|ascii_downcase) == $NAME_LC)) 
               | .id
             '
           }
 
-          # Função: criar pasta sob um parent com slug/name desejado
+          # Função: criar pasta
           create_folder() {
             local parent_id="$1"
             local name_raw="$2"
@@ -879,7 +878,7 @@ jobs:
             local SUCCESS
             SUCCESS=$(echo "$RESULT" | jq -r '.data.assets.createFolder.responseResult.succeeded')
             if [ "$SUCCESS" != "true" ]; then
-              echo "Erro a criar pasta '$name_raw' sob parent $parent_id"
+              echo "❌ Erro a criar pasta '$name_raw'"
               exit 1
             fi
           }
@@ -895,7 +894,6 @@ jobs:
             if [[ -z "$FOLDER_ID" || "$FOLDER_ID" == "null" ]]; then
               echo "… não existe, a criar '$PART'…"
               create_folder "$CURRENT_PARENT" "$PART"
-              # re-obter ID já sob o mesmo parent
               FOLDER_ID="$(get_folder_id "$CURRENT_PARENT" "$PART" | head -n1 || true)"
               if [[ -z "$FOLDER_ID" || "$FOLDER_ID" == "null" ]]; then
                 echo "Falha a obter ID da pasta '$PART' após criação."
@@ -909,10 +907,10 @@ jobs:
             CURRENT_PARENT="$FOLDER_ID"
           done
 
+          echo "🎯 FOLDER_ID final = $FOLDER_ID"
           echo "FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
           echo "UPLOAD_URL=$UPLOAD_URL" >> "$GITHUB_ENV"
           echo "GRAPHQL_URL=$GRAPHQL_URL" >> "$GITHUB_ENV"
-          echo "Estrutura final pronta. ID da 'documentation': $FOLDER_ID"
 
       - name: Upload Media Files
         env:
