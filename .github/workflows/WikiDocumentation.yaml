@@ -806,13 +806,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          # === CONFIGURAÇÃO CORRETA ===
+          # === CONFIGURAÇÃO ===
           REPO_NAME="${GITHUB_REPOSITORY##*/}"
           REPO_NAME="${REPO_NAME,,}"  # lowercase
           ASSET_FOLDER_PATH="Pedro/Aplicacoes/${REPO_NAME}/documentation"
 
           BASE_URL="${WIKI_URL%/}"
-
           if [[ "$BASE_URL" =~ /graphql$ ]]; then
             GRAPHQL_URL="$BASE_URL"
             BASE_URL="${BASE_URL%/graphql}"
@@ -823,65 +822,97 @@ jobs:
             UPLOAD_URL="${BASE_URL}/u"
           fi
 
-          # === Função: obter ID de pasta (com parentId e name) ===
+          # Função: slugificar um segmento de pasta (aprox. ao que a Wiki.js faz)
+          slugify() {
+            # lowercase, espaços -> '-', remove tudo excepto [a-z0-9-_.]
+            echo "$1" \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's/[[:space:]]+/-/g' \
+              | sed -E 's/[^a-z0-9._-]+/-/g' \
+              | sed -E 's/-{2,}/-/g' \
+              | sed -E 's/^-+|-+$//g'
+          }
+
+          # Função: obter ID da pasta por parent + slug/name
           get_folder_id() {
             local parent_id="$1"
-            local name="$2"
-            if [ -z "$parent_id" ]; then parent_id=0; fi
-            QUERY="query { assets { folders(parentFolderId: $parent_id) { id name } } }"
+            local name_raw="$2"
+            [[ -z "$parent_id" ]] && parent_id=0
+
+            local name_lc slug
+            name_lc="$(echo "$name_raw" | tr '[:upper:]' '[:lower:]')"
+            slug="$(slugify "$name_raw")"
+
+            local QUERY JSON RESULT
+            QUERY="query { assets { folders(parentFolderId: $parent_id) { id name slug } } }"
             JSON=$(jq -n --arg q "$QUERY" '{ query: $q }')
             RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data "$JSON")
-            echo "$RESULT" | jq -r --arg NAME "$name" '.data.assets.folders[]? | select(.name == $NAME) | .id'
+
+            # tenta por slug exato; fallback por name case-insensitive
+            echo "$RESULT" | jq -r --arg SLUG "$slug" --arg NAME_LC "$name_lc" '
+              .data.assets.folders[]? 
+              | select((.slug == $SLUG) or ((.name|asciifold|ascii_downcase) == $NAME_LC)) 
+              | .id
+            '
           }
 
-          # === Função: criar pasta (com parentId, slug e name) ===
+          # Função: criar pasta sob um parent com slug/name desejado
           create_folder() {
             local parent_id="$1"
-            local slug="$2"
-            local name="$3"
-            if [ -z "$parent_id" ]; then parent_id=0; fi
-            MUTATION="mutation { assets { createFolder(parentFolderId: $parent_id, slug: \"$slug\", name: \"$name\") { responseResult { succeeded message } } } }"
+            local name_raw="$2"
+            [[ -z "$parent_id" ]] && parent_id=0
+            local slug
+            slug="$(slugify "$name_raw")"
+
+            local MUTATION JSON RESULT
+            MUTATION="mutation { assets { createFolder(parentFolderId: $parent_id, slug: \"$slug\", name: \"$name_raw\") { responseResult { succeeded message } } } }"
             JSON=$(jq -n --arg q "$MUTATION" '{ query: $q }')
             RESULT=$(curl -s -X POST "$GRAPHQL_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data "$JSON")
+
             echo "$RESULT" | jq .
+            local SUCCESS
             SUCCESS=$(echo "$RESULT" | jq -r '.data.assets.createFolder.responseResult.succeeded')
             if [ "$SUCCESS" != "true" ]; then
-              echo "❌ Erro a criar pasta '$name'"
+              echo "Erro a criar pasta '$name_raw' sob parent $parent_id"
               exit 1
             fi
           }
 
-          # === Criação da estrutura hierárquica ===
-          echo "📁 A criar/verificar estrutura: $ASSET_FOLDER_PATH"
+          echo "Estrutura alvo: $ASSET_FOLDER_PATH"
           IFS='/' read -ra PARTS <<< "$ASSET_FOLDER_PATH"
+
           CURRENT_PARENT=""
-
           for PART in "${PARTS[@]}"; do
-            echo "🔍 Procurando '$PART' dentro do parent ID '${CURRENT_PARENT:-0}'"
-            FOLDER_ID=$(get_folder_id "$CURRENT_PARENT" "$PART")
+            echo "→ Verificar/criar '$PART' sob parent '${CURRENT_PARENT:-0}'"
+            FOLDER_ID="$(get_folder_id "$CURRENT_PARENT" "$PART" | head -n1 || true)"
 
-            if [ -z "$FOLDER_ID" ]; then
-              echo "📁 Pasta '$PART' não encontrada. A criar..."
-              create_folder "$CURRENT_PARENT" "$PART" "$PART"
-              FOLDER_ID=$(get_folder_id "$CURRENT_PARENT" "$PART")
-              echo "✅ Criada com ID $FOLDER_ID"
+            if [[ -z "$FOLDER_ID" || "$FOLDER_ID" == "null" ]]; then
+              echo "… não existe, a criar '$PART'…"
+              create_folder "$CURRENT_PARENT" "$PART"
+              # re-obter ID já sob o mesmo parent
+              FOLDER_ID="$(get_folder_id "$CURRENT_PARENT" "$PART" | head -n1 || true)"
+              if [[ -z "$FOLDER_ID" || "$FOLDER_ID" == "null" ]]; then
+                echo "Falha a obter ID da pasta '$PART' após criação."
+                exit 1
+              fi
+              echo "✓ criada: id=$FOLDER_ID"
             else
-              echo "✅ Já existe com ID $FOLDER_ID"
+              echo "✓ já existe: id=$FOLDER_ID"
             fi
 
             CURRENT_PARENT="$FOLDER_ID"
           done
 
-          echo "🎯 FOLDER_ID final = $FOLDER_ID"
           echo "FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
           echo "UPLOAD_URL=$UPLOAD_URL" >> "$GITHUB_ENV"
           echo "GRAPHQL_URL=$GRAPHQL_URL" >> "$GITHUB_ENV"
+          echo "Estrutura final pronta. ID da 'documentation': $FOLDER_ID"
 
       - name: Upload Media Files
         env:
