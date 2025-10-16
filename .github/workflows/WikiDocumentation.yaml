@@ -43,22 +43,16 @@ jobs:
     name: "Setup Environment"
     runs-on: ubuntu-latest
     outputs:
-      BASE_PATH_SAFE: ${{ steps.export.outputs.BASE_PATH_SAFE }}
+      # removed BASE_PATH_SAFE (unused)
       ASSET_PATH_SAFE: ${{ steps.export.outputs.ASSET_PATH_SAFE }}
     steps:
-      - name: Compute BASE_PATH_SAFE
+      - name: Compute ASSET_PATH_SAFE
         id: export
         run: |
           set -euo pipefail
+          # removed BASE_PATH_SAFE (unused)
           raw_base="${BASE_PATH:-}"
           raw_app="${REPO_NAME:-}"
-
-          base_safe=$(echo "$raw_base" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null)
-          base_safe=$(echo "$base_safe" | sed 's/[^a-zA-Z0-9\/-]//g')
-          base_safe=$(echo "$base_safe" | sed 's#//*#/#g')
-          base_safe="${base_safe%/}"
-          echo "BASE_PATH_SAFE=$base_safe"
-          echo "BASE_PATH_SAFE=$base_safe" >> "$GITHUB_OUTPUT"
 
           sanitize_segment() {
             local segment="$1"
@@ -949,7 +943,7 @@ jobs:
     needs: [setup-env, check-pages-folders]
     if: needs.check-pages-folders.outputs.has_repo_path == 'false'
     env:
-      BASE_PATH_SAFE: ${{ needs.setup-env.outputs.BASE_PATH_SAFE }}
+      # removed BASE_PATH_SAFE (unused)
       ASSET_PATH_SAFE: ${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}
       PARENT_FOLDER_ID: "1"
     steps:
