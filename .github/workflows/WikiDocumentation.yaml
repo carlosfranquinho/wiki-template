@@ -95,15 +95,19 @@ jobs:
           set -euo pipefail
 
           fix_image_paths() {
-           local file="$1"
+            local file="$1"
             local prefix="/${ASSET_PATH_SAFE}/documentation/"
 
             sed -E -i "
+              # Corrige imagens dentro de 'documentation/'
               s#\]\((<?)(\./)?documentation/#](\1${prefix}#g;
               s#^(\[[^\]]+\]:[[:space:]]*)(<?)(\./)?documentation/#\1\2${prefix}#g;
-              s#!\[([^\]]*)\]\(([A-Za-z0-9._-]+\.(png|jpg|jpeg|gif|svg|webp|drawio|pdf))\)#![\1](${prefix}\2)#g;
+
+              # Corrige imagens referidas sem 'documentation/'
+              s#\!\[([^\]]*)\]\(([A-Za-z0-9._-]+\.(png|jpg|jpeg|gif|svg|webp|drawio|pdf))\)#![\1](${prefix}\2)#g;
             " "$file"
           }
+
           EOF
       - name: Upload helper script for later jobs
         uses: actions/upload-artifact@v4
