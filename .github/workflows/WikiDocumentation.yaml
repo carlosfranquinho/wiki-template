@@ -259,13 +259,50 @@ jobs:
           missing_files=(${{ needs.check-pages-folders.outputs.missing_files }})
           echo "Missing files to create: ${missing_files[*]}"
 
+          sanitize_asset_segment() {
+            local segment="$1"
+            segment="$(echo "$segment" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null)"
+            segment="$(echo "$segment" | tr '[:upper:]' '[:lower:]')"
+            segment="$(echo "$segment" | sed 's/[^a-z0-9._-]/-/g')"
+            segment="$(echo "$segment" | sed 's/-\{2,\}/-/g; s/^-//; s/-$//')"
+            if [ -z "$segment" ]; then
+              segment="assets-folder"
+            fi
+            echo "$segment"
+          }
+
+          build_asset_base_path() {
+            local path="$1"
+            local result=""
+            local oldIFS="$IFS"
+            IFS='/'
+            read -r -a parts <<< "$path"
+            IFS="$oldIFS"
+            for part in "${parts[@]}"; do
+              [ -z "$part" ] && continue
+              local sanitized_part
+              sanitized_part="$(sanitize_asset_segment "$part")"
+              result="${result}/${sanitized_part}"
+            done
+            result="${result#/}"
+            echo "$result"
+          }
+
+          ASSET_BASE_PATH="$(build_asset_base_path "${BASE_PATH:-}")"
+          ASSET_REPO_SEGMENT="$(sanitize_asset_segment "${REPO_NAME:-}")"
+          if [ -n "$ASSET_BASE_PATH" ]; then
+            ASSET_PREFIX="/${ASSET_BASE_PATH}/${ASSET_REPO_SEGMENT}/documentation/"
+          else
+            ASSET_PREFIX="/${ASSET_REPO_SEGMENT}/documentation/"
+          fi
+          echo "🔗 Asset prefix: $ASSET_PREFIX"
+
           for FILE in "${missing_files[@]}"; do
             echo "  • Will create: $FILE"
             src_md="documentation/$(basename "$FILE").md"
 
             # Corrigir paths de imagens antes de ler o conteúdo
             echo "🔧 Corrigindo paths de imagens em $src_md"
-            ASSET_PREFIX="/${BASE_PATH_SAFE}/${REPO_NAME}/documentation/"
             sed -i -E "s#\!\[([^\]]*)\]\(((\./|\.\./)?documentation/[^)]+)\)#![\1](${ASSET_PREFIX}\3)#g" "$src_md"
             sed -i -E "s#^(\[[^]]+\]:\s*)(\./|\.\./)?documentation/#\1${ASSET_PREFIX}#g" "$src_md"
 
@@ -897,7 +934,7 @@ jobs:
             local SUCCESS
             SUCCESS=$(echo "$RESULT" | jq -r '.data.assets.createFolder.responseResult.succeeded')
             if [ "$SUCCESS" != "true" ]; then
-              echo "❌ Erro a criar pasta '$name_raw'"
+              echo "Erro a criar pasta '$name_raw'"
               exit 1
             fi
           }
@@ -926,7 +963,7 @@ jobs:
             CURRENT_PARENT="$FOLDER_ID"
           done
 
-          echo "🎯 FOLDER_ID final = $FOLDER_ID"
+          echo "FOLDER_ID final = $FOLDER_ID"
           echo "FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
           echo "UPLOAD_URL=$UPLOAD_URL" >> "$GITHUB_ENV"
           echo "GRAPHQL_URL=$GRAPHQL_URL" >> "$GITHUB_ENV"
@@ -1072,7 +1109,7 @@ jobs:
           echo "$MEDIA_FILES" | while IFS= read -r filepath || [ -n "$filepath" ]; do
             [ -z "$filepath" ] && continue
             if [ ! -f "$filepath" ]; then
-              echo "⚠️ File '$filepath' not found locally, skipping."
+              echo "File '$filepath' not found locally, skipping."
               continue
             fi
 
