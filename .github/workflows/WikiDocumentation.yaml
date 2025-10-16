@@ -342,8 +342,8 @@ jobs:
             fi
 
             echo "🔧 Corrigindo paths de imagens em $src_md"
+            fix_image_paths "$src_md"
             CONTENT=$(tr -d '\r' < "$src_md")
-            CONTENT=$(printf '%s\n' "$CONTENT" | fix_image_paths /dev/stdin)
 
             # Limpeza adicional de links relativos a outros .md
             CONTENT=$(
@@ -452,8 +452,8 @@ jobs:
           # ✏️ Corrigir paths e ler conteúdo
           # ------------------------------------------------------------
           echo "🔧 Corrigindo paths de imagens em README.md"
+          fix_image_paths "README.md"
           CONTENT=$(tr -d '\r' < README.md)
-          CONTENT=$(printf '%s\n' "$CONTENT" | fix_image_paths /dev/stdin)
 
           # ------------------------------------------------------------
           # 🔗 Reescrever links relativos (markdown internos)
