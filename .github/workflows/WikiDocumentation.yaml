@@ -308,13 +308,15 @@ jobs:
             CONTENT=$(tr -d '\r' < "$src_md")
             CONTENT=$(
               printf '%s\n' "$CONTENT" | sed -E \
-                -e "s#\]\((<?)(\./)?documentation/#](\1${ASSET_PREFIX}#g" \
-                -e "s#^(\[[^\]]+\]:[[:space:]]*)(<?)(\./)?documentation/#\1\2${ASSET_PREFIX}#g"
+                -e "s#\]\((<?)((\./)|/|((\.\./)+))?documentation/#](\1${ASSET_PREFIX}#g" \
+                -e "s#^(\[[^]]+\]:[[:space:]]*)(<?)((\./)|/|((\.\./)+))?documentation/#\1\2${ASSET_PREFIX}#g"
             )
 
             # Limpeza adicional dos links de markdown para outros .md internos (mantém só ./documentation)
             CONTENT=$(
               printf '%s\n' "$CONTENT" | sed -E \
+                -e "s#\]\((<?)[[:space:]]*${ASSET_PREFIX}([^)]*)\.md([?#][^)]*)\)#](\1./documentation/\2\3)#g" \
+                -e "s#\]\((<?)[[:space:]]*${ASSET_PREFIX}([^)]*)\.md\)#](\1./documentation/\2)#g" \
                 -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
                 -e 's#\]\([[:space:]]*documentation/#](./documentation/#g' \
                 -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md([?#][^)]*)\)#](./documentation/\1\2)#g' \
@@ -653,13 +655,15 @@ jobs:
             CONTENT=$(tr -d '\r' < "$src_md")
             CONTENT=$(
               printf '%s\n' "$CONTENT" | sed -E \
-                -e "s#\]\((<?)(\./)?documentation/#](\1${ASSET_PREFIX}#g" \
-                -e "s#^(\[[^\]]+\]:[[:space:]]*)(<?)(\./)?documentation/#\1\2${ASSET_PREFIX}#g"
+                -e "s#\]\((<?)((\./)|/|((\.\./)+))?documentation/#](\1${ASSET_PREFIX}#g" \
+                -e "s#^(\[[^]]+\]:[[:space:]]*)(<?)((\./)|/|((\.\./)+))?documentation/#\1\2${ASSET_PREFIX}#g"
             )
 
             # Rewrite internal links
             CONTENT=$(
               printf '%s\n' "$CONTENT" | sed -E \
+                -e "s#\]\((<?)[[:space:]]*${ASSET_PREFIX}([^)]*)\.md([?#][^)]*)\)#](\1./documentation/\2\3)#g" \
+                -e "s#\]\((<?)[[:space:]]*${ASSET_PREFIX}([^)]*)\.md\)#](\1./documentation/\2)#g" \
                 -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
                 -e 's#\]\([[:space:]]*documentation/#](./documentation/#g' \
                 -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md([?#][^)]*)\)#](./documentation/\1\2)#g' \
