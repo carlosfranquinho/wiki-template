@@ -293,9 +293,8 @@ jobs:
           echo "Missing files to create: ${missing_files[*]}"
 
           ASSET_PATH_SAFE="${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}"
-          if [ -n "$ASSET_PATH_SAFE" ]; then
-            ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
-          else
+          ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
+          if [ -z "$ASSET_PATH_SAFE" ]; then
             ASSET_PREFIX="/documentation/"
           fi
           echo "🔗 Asset prefix: $ASSET_PREFIX"
@@ -306,8 +305,8 @@ jobs:
 
             # Corrigir paths de imagens antes de ler o conteúdo
             echo "🔧 Corrigindo paths de imagens em $src_md"
-            sed -i -E "s#(!\[[^\]]*\]\()(<?)[^)>]*documentation/([^)>]+)(>?)\)#\1\2${ASSET_PREFIX}\3\4)#g" "$src_md"
-            sed -i -E "s#^(\[[^\]]+\]:\s*)(<?)[^>[:space:]]*documentation/([^>[:space:]]+)(>?)(.*)#\1\2${ASSET_PREFIX}\3\4\5#g" "$src_md"
+            sed -i -E "s#\]\((<?)(\./)?documentation/#](\1${ASSET_PREFIX}#g" "$src_md"
+            sed -i -E "s#^(\[[^\]]+\]:[[:space:]]*)(<?)(\./)?documentation/#\1\2${ASSET_PREFIX}#g" "$src_md"
 
             # Ler o conteúdo corrigido
             CONTENT=$(<"$src_md")
@@ -389,9 +388,8 @@ jobs:
           echo "📄 REPO_PATH: ${REPO_PATH}"
           echo "📘 README_PATH: ${README_PATH}"
 
-          if [ -n "${ASSET_PATH_SAFE:-}" ]; then
-            ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
-          else
+          ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
+          if [ -z "${ASSET_PATH_SAFE:-}" ]; then
             ASSET_PREFIX="/documentation/"
           fi
 
@@ -406,8 +404,8 @@ jobs:
 
           CONTENT=$(
             printf '%s\n' "$CONTENT" | sed -E \
-              -e "s#(!\[[^\]]*\]\()(<?)[^)>]*documentation/([^)>]+)(>?)\)#\1\2${ASSET_PREFIX}\3\4)#g" \
-              -e "s#^(\[[^\]]+\]:\s*)(<?)[^>[:space:]]*documentation/([^>[:space:]]+)(>?)(.*)#\1\2${ASSET_PREFIX}\3\4\5#g"
+              -e "s#\]\((<?)(\./)?documentation/#](\1${ASSET_PREFIX}#g" \
+              -e "s#^(\[[^\]]+\]:[[:space:]]*)(<?)(\./)?documentation/#\1\2${ASSET_PREFIX}#g"
           )
 
           # ------------------------------------------------------------
@@ -495,9 +493,8 @@ jobs:
           CHANGELOG_PATH="$(echo "${REPO_PATH}/changelog" | sed 's#//*#/#g')"
           echo "📄 CHANGELOG_PATH: ${CHANGELOG_PATH}"
 
-          if [ -n "${ASSET_PATH_SAFE:-}" ]; then
-            ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
-          else
+          ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
+          if [ -z "${ASSET_PATH_SAFE:-}" ]; then
             ASSET_PREFIX="/documentation/"
           fi
 
@@ -512,8 +509,8 @@ jobs:
           CONTENT=$(tr -d '\r' < CHANGELOG.md)
           CONTENT=$(
             printf '%s\n' "$CONTENT" | sed -E \
-              -e "s#(!\[[^\]]*\]\()(<?)[^)>]*documentation/([^)>]+)(>?)\)#\1\2${ASSET_PREFIX}\3\4)#g" \
-              -e "s#^(\[[^\]]+\]:\s*)(<?)[^>[:space:]]*documentation/([^>[:space:]]+)(>?)(.*)#\1\2${ASSET_PREFIX}\3\4\5#g"
+              -e "s#\]\((<?)(\./)?documentation/#](\1${ASSET_PREFIX}#g" \
+              -e "s#^(\[[^\]]+\]:[[:space:]]*)(<?)(\./)?documentation/#\1\2${ASSET_PREFIX}#g"
           )
           echo "✅ Conteúdo do CHANGELOG carregado."
 
@@ -644,9 +641,8 @@ jobs:
             exit 0
           fi
 
-          if [ -n "${ASSET_PATH_SAFE:-}" ]; then
-            ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
-          else
+          ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
+          if [ -z "${ASSET_PATH_SAFE:-}" ]; then
             ASSET_PREFIX="/documentation/"
           fi
 
@@ -656,8 +652,8 @@ jobs:
             CONTENT=$(<"$src_md")
 
             CONTENT=$(printf '%s\n' "$CONTENT" | sed -E \
-              -e "s#(!\[[^\]]*\]\()(<?)[^)>]*documentation/([^)>]+)(>?)\)#\1\2${ASSET_PREFIX}\3\4)#g" \
-              -e "s#^(\[[^\]]+\]:\s*)(<?)[^>[:space:]]*documentation/([^>[:space:]]+)(>?)(.*)#\1\2${ASSET_PREFIX}\3\4\5#g"
+              -e "s#\]\((<?)(\./)?documentation/#](\1${ASSET_PREFIX}#g" \
+              -e "s#^(\[[^\]]+\]:[[:space:]]*)(<?)(\./)?documentation/#\1\2${ASSET_PREFIX}#g"
             )
 
             # Rewrite internal links
@@ -762,16 +758,15 @@ jobs:
           set -euo pipefail
           PAGE_ID="${{ steps.find_readme.outputs.page_id }}"
 
-          if [ -n "${ASSET_PATH_SAFE:-}" ]; then
-            ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
-          else
+          ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
+          if [ -z "${ASSET_PATH_SAFE:-}" ]; then
             ASSET_PREFIX="/documentation/"
           fi
 
           CONTENT=$(tr -d '\r' < README.md)
           CONTENT=$(printf '%s\n' "$CONTENT" | sed -E \
-            -e "s#(!\[[^\]]*\]\()(<?)[^)>]*documentation/([^)>]+)(>?)\)#\1\2${ASSET_PREFIX}\3\4)#g" \
-            -e "s#^(\[[^\]]+\]:\s*)(<?)[^>[:space:]]*documentation/([^>[:space:]]+)(>?)(.*)#\1\2${ASSET_PREFIX}\3\4\5#g"
+            -e "s#\]\((<?)(\./)?documentation/#](\1${ASSET_PREFIX}#g" \
+            -e "s#^(\[[^\]]+\]:[[:space:]]*)(<?)(\./)?documentation/#\1\2${ASSET_PREFIX}#g"
           )
           CONTENT=$(printf '%s\n' "$CONTENT" | sed -E \
             -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
@@ -857,16 +852,15 @@ jobs:
           set -euo pipefail
           PAGE_ID="${{ steps.find_changelog.outputs.page_id }}"
 
-          if [ -n "${ASSET_PATH_SAFE:-}" ]; then
-            ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
-          else
+          ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
+          if [ -z "${ASSET_PATH_SAFE:-}" ]; then
             ASSET_PREFIX="/documentation/"
           fi
 
           CONTENT=$(tr -d '\r' < CHANGELOG.md)
           CONTENT=$(printf '%s\n' "$CONTENT" | sed -E \
-            -e "s#(!\[[^\]]*\]\()(<?)[^)>]*documentation/([^)>]+)(>?)\)#\1\2${ASSET_PREFIX}\3\4)#g" \
-            -e "s#^(\[[^\]]+\]:\s*)(<?)[^>[:space:]]*documentation/([^>[:space:]]+)(>?)(.*)#\1\2${ASSET_PREFIX}\3\4\5#g"
+            -e "s#\]\((<?)(\./)?documentation/#](\1${ASSET_PREFIX}#g" \
+            -e "s#^(\[[^\]]+\]:[[:space:]]*)(<?)(\./)?documentation/#\1\2${ASSET_PREFIX}#g"
           )
 
           QUERY='mutation ($id: Int!, $content: String!, $locale: String!) {
