@@ -650,19 +650,20 @@ jobs:
           for FILE in "${docs_files[@]}"; do
             echo "📝 Updating: $FILE"
             src_md="documentation/${FILE}.md"
-            CONTENT=$(<"$src_md")
-
-            CONTENT=$(printf '%s\n' "$CONTENT" | sed -E \
-              -e "s#\]\((<?)(\./)?documentation/#](\1${ASSET_PREFIX}#g" \
-              -e "s#^(\[[^\]]+\]:[[:space:]]*)(<?)(\./)?documentation/#\1\2${ASSET_PREFIX}#g"
+            CONTENT=$(tr -d '\r' < "$src_md")
+            CONTENT=$(
+              printf '%s\n' "$CONTENT" | sed -E \
+                -e "s#\]\((<?)(\./)?documentation/#](\1${ASSET_PREFIX}#g" \
+                -e "s#^(\[[^\]]+\]:[[:space:]]*)(<?)(\./)?documentation/#\1\2${ASSET_PREFIX}#g"
             )
 
             # Rewrite internal links
-            CONTENT=$(printf '%s\n' "$CONTENT" | sed -E \
-              -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
-              -e 's#\]\([[:space:]]*documentation/#](./documentation/#g' \
-              -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md([?#][^)]*)\)#](./documentation/\1\2)#g' \
-              -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
+            CONTENT=$(
+              printf '%s\n' "$CONTENT" | sed -E \
+                -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
+                -e 's#\]\([[:space:]]*documentation/#](./documentation/#g' \
+                -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md([?#][^)]*)\)#](./documentation/\1\2)#g' \
+                -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
             )
 
             # Determine the page ID dynamically from environment
