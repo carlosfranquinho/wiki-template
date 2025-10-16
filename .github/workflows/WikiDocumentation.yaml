@@ -102,7 +102,7 @@ jobs:
               s#\]\((<?)(\./)?documentation/#](\1${prefix}#g;
               s#^(\[[^\]]+\]:[[:space:]]*)(<?)(\./)?documentation/#\1\2${prefix}#g;
               s#!\[([^\]]*)\]\(([A-Za-z0-9._-]+\.(png|jpg|jpeg|gif|svg|webp|drawio|pdf))\)#![\1](${prefix}\2)#g;
-            " "\$file"
+            " "$file"
           }
           EOF
       - name: Upload helper script for later jobs
