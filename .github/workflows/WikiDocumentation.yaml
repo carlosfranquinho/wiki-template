@@ -303,13 +303,14 @@ jobs:
             echo "  • Will create: $FILE"
             src_md="documentation/$(basename "$FILE").md"
 
-            # Corrigir paths de imagens antes de ler o conteúdo
+            # Corrigir paths de imagens antes de enviar para o GraphQL
             echo "🔧 Corrigindo paths de imagens em $src_md"
-            sed -i -E "s#\]\((<?)(\./)?documentation/#](\1${ASSET_PREFIX}#g" "$src_md"
-            sed -i -E "s#^(\[[^\]]+\]:[[:space:]]*)(<?)(\./)?documentation/#\1\2${ASSET_PREFIX}#g" "$src_md"
-
-            # Ler o conteúdo corrigido
-            CONTENT=$(<"$src_md")
+            CONTENT=$(tr -d '\r' < "$src_md")
+            CONTENT=$(
+              printf '%s\n' "$CONTENT" | sed -E \
+                -e "s#\]\((<?)(\./)?documentation/#](\1${ASSET_PREFIX}#g" \
+                -e "s#^(\[[^\]]+\]:[[:space:]]*)(<?)(\./)?documentation/#\1\2${ASSET_PREFIX}#g"
+            )
 
             # Limpeza adicional dos links de markdown para outros .md internos (mantém só ./documentation)
             CONTENT=$(
