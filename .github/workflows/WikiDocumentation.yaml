@@ -95,17 +95,19 @@ jobs:
           set -euo pipefail
 
           fix_image_paths() {
-            local file="$1"
             local prefix="/${ASSET_PATH_SAFE}/documentation/"
 
-            sed -E -i "
-              # Corrige imagens dentro de 'documentation/'
+          sed -E "
+            # 1) ./documentation/... -> /<safe>/documentation/...
               s#\]\((<?)(\./)?documentation/#](\1${prefix}#g;
+
+              # 2) reference-style [id]: ./documentation/... -> /<safe>/documentation/...
               s#^(\[[^\]]+\]:[[:space:]]*)(<?)(\./)?documentation/#\1\2${prefix}#g;
 
-              # Corrige imagens referidas sem 'documentation/'
-              s#\!\[([^\]]*)\]\(([A-Za-z0-9._-]+\.(png|jpg|jpeg|gif|svg|webp|drawio|pdf))\)#![\1](${prefix}\2)#g;
-            " "$file"
+              # 3) Só nome do ficheiro dentro de um image link -> prefixar /<safe>/documentation/
+              #    cobre png|jpg|jpeg|gif|svg|webp|drawio|pdf
+              s#(!\[[^]]*\]\()[[:space:]]*([A-Za-z0-9._-]+\.(png|jpg|jpeg|gif|svg|webp|drawio|pdf))([[:space:]]*\))#\1${prefix}\2\3#g;
+            "
           }
 
           EOF
@@ -346,8 +348,7 @@ jobs:
             fi
 
             echo "🔧 Corrigindo paths de imagens em $src_md"
-            fix_image_paths "$src_md"
-            CONTENT=$(tr -d '\r' < "$src_md")
+            CONTENT=$(tr -d '\r' < "$src_md" | fix_image_paths)
 
             # Limpeza adicional de links relativos a outros .md
             CONTENT=$(
@@ -456,8 +457,7 @@ jobs:
           # ✏️ Corrigir paths e ler conteúdo
           # ------------------------------------------------------------
           echo "🔧 Corrigindo paths de imagens em README.md"
-          fix_image_paths "README.md"
-          CONTENT=$(tr -d '\r' < README.md)
+          CONTENT=$(tr -d '\r' < README.md | fix_image_paths)
 
           # ------------------------------------------------------------
           # 🔗 Reescrever links relativos (markdown internos)
