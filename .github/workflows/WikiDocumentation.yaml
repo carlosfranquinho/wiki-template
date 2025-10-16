@@ -306,8 +306,8 @@ jobs:
 
             # Corrigir paths de imagens antes de ler o conteúdo
             echo "🔧 Corrigindo paths de imagens em $src_md"
-            sed -i -E "s#\!\[([^\]]*)\]\(((\./|\.\./)?documentation/[^)]+)\)#![\1](${ASSET_PREFIX}\3)#g" "$src_md"
-            sed -i -E "s#^(\[[^]]+\]:\s*)(\./|\.\./)?documentation/#\1${ASSET_PREFIX}#g" "$src_md"
+            sed -i -E "s#(!\[[^\]]*\]\()(<?)[^)>]*documentation/([^)>]+)(>?)\)#\1\2${ASSET_PREFIX}\3\4)#g" "$src_md"
+            sed -i -E "s#^(\[[^\]]+\]:\s*)(<?)[^>[:space:]]*documentation/([^>[:space:]]+)(>?)(.*)#\1\2${ASSET_PREFIX}\3\4\5#g" "$src_md"
 
             # Ler o conteúdo corrigido
             CONTENT=$(<"$src_md")
@@ -367,8 +367,10 @@ jobs:
   create-readme-page:
     name: "Create README Page if missing"
     runs-on: ubuntu-latest
-    needs: [check-pages-folders]
+    needs: [setup-env, check-pages-folders]
     if: needs.check-pages-folders.outputs.has_repo_path == 'false' && needs.check-pages-folders.outputs.has_readme_page == 'false'
+    env:
+      ASSET_PATH_SAFE: ${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -387,6 +389,12 @@ jobs:
           echo "📄 REPO_PATH: ${REPO_PATH}"
           echo "📘 README_PATH: ${README_PATH}"
 
+          if [ -n "${ASSET_PATH_SAFE:-}" ]; then
+            ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
+          else
+            ASSET_PREFIX="/documentation/"
+          fi
+
           # ------------------------------------------------------------
           # 3️⃣ Ler o conteúdo do README.md (sem CRLF)
           # ------------------------------------------------------------
@@ -395,6 +403,12 @@ jobs:
             exit 1
           fi
           CONTENT=$(tr -d '\r' < README.md)
+
+          CONTENT=$(
+            printf '%s\n' "$CONTENT" | sed -E \
+              -e "s#(!\[[^\]]*\]\()(<?)[^)>]*documentation/([^)>]+)(>?)\)#\1\2${ASSET_PREFIX}\3\4)#g" \
+              -e "s#^(\[[^\]]+\]:\s*)(<?)[^>[:space:]]*documentation/([^>[:space:]]+)(>?)(.*)#\1\2${ASSET_PREFIX}\3\4\5#g"
+          )
 
           # ------------------------------------------------------------
           # 4️⃣ Reescrever links relativos (para documentação local)
@@ -462,8 +476,10 @@ jobs:
   create-changelog-page:
     name: "Create CHANGELOG Page if missing"
     runs-on: ubuntu-latest
-    needs: [check-pages-folders]
+    needs: [setup-env, check-pages-folders]
     if: needs.check-pages-folders.outputs.has_repo_path == 'false' && needs.check-pages-folders.outputs.has_changelog_page == 'false'
+    env:
+      ASSET_PATH_SAFE: ${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -479,6 +495,12 @@ jobs:
           CHANGELOG_PATH="$(echo "${REPO_PATH}/changelog" | sed 's#//*#/#g')"
           echo "📄 CHANGELOG_PATH: ${CHANGELOG_PATH}"
 
+          if [ -n "${ASSET_PATH_SAFE:-}" ]; then
+            ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
+          else
+            ASSET_PREFIX="/documentation/"
+          fi
+
           # ------------------------------------------------------------
           # 3️⃣ Ler o conteúdo do ficheiro CHANGELOG.md
           # ------------------------------------------------------------
@@ -488,6 +510,11 @@ jobs:
           fi
 
           CONTENT=$(tr -d '\r' < CHANGELOG.md)
+          CONTENT=$(
+            printf '%s\n' "$CONTENT" | sed -E \
+              -e "s#(!\[[^\]]*\]\()(<?)[^)>]*documentation/([^)>]+)(>?)\)#\1\2${ASSET_PREFIX}\3\4)#g" \
+              -e "s#^(\[[^\]]+\]:\s*)(<?)[^>[:space:]]*documentation/([^>[:space:]]+)(>?)(.*)#\1\2${ASSET_PREFIX}\3\4\5#g"
+          )
           echo "✅ Conteúdo do CHANGELOG carregado."
 
           # ------------------------------------------------------------
@@ -546,8 +573,10 @@ jobs:
   update-docs-content:
     name: "Update Documentation Files in Wiki"
     runs-on: ubuntu-latest
-    needs: [check-pages-folders, check-altered-files]
+    needs: [setup-env, check-pages-folders, check-altered-files]
     if: needs.check-pages-folders.outputs.has_repo_path == 'true' && needs.check-altered-files.outputs.docs_changed == 'true'
+    env:
+      ASSET_PATH_SAFE: ${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -615,10 +644,21 @@ jobs:
             exit 0
           fi
 
+          if [ -n "${ASSET_PATH_SAFE:-}" ]; then
+            ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
+          else
+            ASSET_PREFIX="/documentation/"
+          fi
+
           for FILE in "${docs_files[@]}"; do
             echo "📝 Updating: $FILE"
             src_md="documentation/${FILE}.md"
             CONTENT=$(<"$src_md")
+
+            CONTENT=$(printf '%s\n' "$CONTENT" | sed -E \
+              -e "s#(!\[[^\]]*\]\()(<?)[^)>]*documentation/([^)>]+)(>?)\)#\1\2${ASSET_PREFIX}\3\4)#g" \
+              -e "s#^(\[[^\]]+\]:\s*)(<?)[^>[:space:]]*documentation/([^>[:space:]]+)(>?)(.*)#\1\2${ASSET_PREFIX}\3\4\5#g"
+            )
 
             # Rewrite internal links
             CONTENT=$(printf '%s\n' "$CONTENT" | sed -E \
@@ -678,8 +718,10 @@ jobs:
   update-readme-content:
     name: "Update ReadMe in Wiki"
     runs-on: ubuntu-latest
-    needs: [check-pages-folders, check-altered-files]
+    needs: [setup-env, check-pages-folders, check-altered-files]
     if: needs.check-pages-folders.outputs.has_repo_path == 'true' && needs.check-altered-files.outputs.readme_changed == 'true'
+    env:
+      ASSET_PATH_SAFE: ${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -720,7 +762,17 @@ jobs:
           set -euo pipefail
           PAGE_ID="${{ steps.find_readme.outputs.page_id }}"
 
+          if [ -n "${ASSET_PATH_SAFE:-}" ]; then
+            ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
+          else
+            ASSET_PREFIX="/documentation/"
+          fi
+
           CONTENT=$(tr -d '\r' < README.md)
+          CONTENT=$(printf '%s\n' "$CONTENT" | sed -E \
+            -e "s#(!\[[^\]]*\]\()(<?)[^)>]*documentation/([^)>]+)(>?)\)#\1\2${ASSET_PREFIX}\3\4)#g" \
+            -e "s#^(\[[^\]]+\]:\s*)(<?)[^>[:space:]]*documentation/([^>[:space:]]+)(>?)(.*)#\1\2${ASSET_PREFIX}\3\4\5#g"
+          )
           CONTENT=$(printf '%s\n' "$CONTENT" | sed -E \
             -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
             -e 's#\]\([[:space:]]*documentation/#](./documentation/#g' \
@@ -761,8 +813,10 @@ jobs:
   update-changelog-content:
     name: "Update Changelog in Wiki"
     runs-on: ubuntu-latest
-    needs: [check-pages-folders, check-altered-files]
+    needs: [setup-env, check-pages-folders, check-altered-files]
     if: needs.check-pages-folders.outputs.has_repo_path == 'true' && needs.check-altered-files.outputs.changelog_changed == 'true'
+    env:
+      ASSET_PATH_SAFE: ${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -803,7 +857,17 @@ jobs:
           set -euo pipefail
           PAGE_ID="${{ steps.find_changelog.outputs.page_id }}"
 
+          if [ -n "${ASSET_PATH_SAFE:-}" ]; then
+            ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
+          else
+            ASSET_PREFIX="/documentation/"
+          fi
+
           CONTENT=$(tr -d '\r' < CHANGELOG.md)
+          CONTENT=$(printf '%s\n' "$CONTENT" | sed -E \
+            -e "s#(!\[[^\]]*\]\()(<?)[^)>]*documentation/([^)>]+)(>?)\)#\1\2${ASSET_PREFIX}\3\4)#g" \
+            -e "s#^(\[[^\]]+\]:\s*)(<?)[^>[:space:]]*documentation/([^>[:space:]]+)(>?)(.*)#\1\2${ASSET_PREFIX}\3\4\5#g"
+          )
 
           QUERY='mutation ($id: Int!, $content: String!, $locale: String!) {
             pages {
