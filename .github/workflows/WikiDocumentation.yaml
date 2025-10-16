@@ -105,6 +105,11 @@ jobs:
             " "\$file"
           }
           EOF
+      - name: Upload helper script for later jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: fix_paths_script
+          path: scripts/fix_paths.sh
 
   # --- Phase 2: Wiki Discovery ---
   check-pages-folders:
@@ -300,6 +305,12 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
+      - name: Download helper script
+        uses: actions/download-artifact@v4
+        with:
+          name: fix_paths_script
+          path: scripts  
+
       - name: Create Documentation Missing Files
         run: |
           set -euo pipefail
@@ -410,6 +421,12 @@ jobs:
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+
+      - name: Download helper script
+        uses: actions/download-artifact@v4
+        with:
+          name: fix_paths_script
+          path: scripts  
       
       - name: Create README Page in Wiki.js
         run: |
