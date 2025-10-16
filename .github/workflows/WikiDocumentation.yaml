@@ -11,8 +11,8 @@ on:
   workflow_call:
     inputs:
       app_name:
-        description: "Optional application name to override the current repository name."
-        required: false
+        description: "Application name to be used when syncing documentation."
+        required: true
         type: string
       base_path:
         description: "Base folder path in the Wiki assets (e.g. 'Pedro/Aplicações')."
@@ -38,88 +38,60 @@ env:
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
 
 jobs:
+  # --- Phase 1: Setup ---
   setup-env:
     name: "Setup Environment"
     runs-on: ubuntu-latest
     outputs:
       BASE_PATH_SAFE: ${{ steps.export.outputs.BASE_PATH_SAFE }}
+      ASSET_PATH_SAFE: ${{ steps.export.outputs.ASSET_PATH_SAFE }}
     steps:
       - name: Compute BASE_PATH_SAFE
         id: export
         run: |
           set -euo pipefail
-          raw="${BASE_PATH:-}"
-          safe=$(echo "$raw" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null)
-          safe=$(echo "$safe" | sed 's/[^a-zA-Z0-9\/-]//g')
-          safe=$(echo "$safe" | sed 's#//*#/#g')
-          safe="${safe%/}"
-          echo "BASE_PATH_SAFE=$safe"
-          echo "BASE_PATH_SAFE=$safe" >> "$GITHUB_OUTPUT"
+          raw_base="${BASE_PATH:-}"
+          raw_app="${REPO_NAME:-}"
 
-  check-altered-files:
-    name: "Check Changed Files"
-    runs-on: ubuntu-latest
-    outputs:
-      docs_changed: ${{ steps.check.outputs.docs_changed }}
-      readme_changed: ${{ steps.check.outputs.readme_changed }}
-      changelog_changed: ${{ steps.check.outputs.changelog_changed }}
-      doc_files_changed: ${{ steps.check.outputs.doc_files_changed }}
-    steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v4
+          base_safe=$(echo "$raw_base" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null)
+          base_safe=$(echo "$base_safe" | sed 's/[^a-zA-Z0-9\/-]//g')
+          base_safe=$(echo "$base_safe" | sed 's#//*#/#g')
+          base_safe="${base_safe%/}"
+          echo "BASE_PATH_SAFE=$base_safe"
+          echo "BASE_PATH_SAFE=$base_safe" >> "$GITHUB_OUTPUT"
 
-      - name: Get changed files
-        id: changed-files
-        run: |
-            # If github.event.before is empty (e.g., first commit or manual run), fallback to comparing with the previous commit or list all files
-            if [ -z "${{ github.event.before }}" ] || [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
-              # If this is the first commit or before is empty, list all tracked files (including added ones)
-              git ls-files > changed_files.txt
-            else
-              git fetch origin ${{ github.event.before }}
-              git diff --name-only ${{ github.event.before }} ${{ github.sha }} > changed_files.txt
-            fi
-            cat changed_files.txt
-            changed_files=$(cat changed_files.txt | tr '\n' ' ')
-            echo "Changed files: $changed_files"
+          sanitize_segment() {
+            local segment="$1"
+            segment=$(echo "$segment" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null)
+            segment=$(echo "$segment" | tr '[:upper:]' '[:lower:]')
+            segment=$(echo "$segment" | sed 's/[^a-z0-9._-]/-/g')
+            segment=$(echo "$segment" | sed 's/-\{2,\}/-/g')
+            segment=$(echo "$segment" | sed 's/^-//; s/-$//')
+            echo "$segment"
+          }
 
-      - name: Check if documentation files changed
-        id: check
-        run: |
-          if grep -qE '^documentation/.*\.md$' changed_files.txt; then
-            echo "Documentation files have changed."
-            echo "docs_changed=true" >> "$GITHUB_OUTPUT"
-            
-            # Get the list of changed documentation files for debugging
-            echo "Changed documentation files:"
-            DOC_FILES_CHANGED=$(grep -E '^documentation/.*\.md$' changed_files.txt)
-            echo "$DOC_FILES_CHANGED"
-            DOC_FILES_CHANGED=($DOC_FILES_CHANGED)
-            echo "DOC_FILES_CHANGED=${DOC_FILES_CHANGED[*]}" >> "$GITHUB_OUTPUT"
-          else
-            echo "No documentation files have changed."
-            echo "docs_changed=false" >> "$GITHUB_OUTPUT"
-          fi
+          asset_path="${raw_base}/${raw_app}"
+          asset_safe=""
+          oldIFS="$IFS"
+          IFS='/'
+          read -r -a segments <<< "$asset_path"
+          IFS="$oldIFS"
+          for segment in "${segments[@]}"; do
+            [ -z "$segment" ] && continue
+            clean_segment=$(sanitize_segment "$segment")
+            [ -z "$clean_segment" ] && continue
+            asset_safe="${asset_safe}/${clean_segment}"
+          done
+          asset_safe="${asset_safe#/}"
+          asset_safe="${asset_safe%/}"
+          echo "ASSET_PATH_SAFE=$asset_safe"
+          echo "ASSET_PATH_SAFE=$asset_safe" >> "$GITHUB_OUTPUT"
 
-          if grep -qE '^README\.md$' changed_files.txt; then
-            echo "README.md has changed."
-            echo "readme_changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "README.md has not changed."
-            echo "readme_changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
-          if grep -qE '^CHANGELOG\.md$' changed_files.txt; then
-            echo "CHANGELOG.md has changed."
-            echo "changelog_changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "CHANGELOG.md has not changed."
-            echo "changelog_changed=false" >> "$GITHUB_OUTPUT"
-          fi
-  
+  # --- Phase 2: Wiki Discovery ---
   check-pages-folders:
     name: "Check if Pages and Folders are created"
     runs-on: ubuntu-latest
+    needs: [setup-env]
     outputs:
       has_repo_path: ${{ steps.check.outputs.has_repo_path }}
       has_documentation_folder: ${{ steps.check.outputs.has_documentation_folder }}
@@ -236,7 +208,70 @@ jobs:
           echo "  • missing_files = ${MISSING_FILES[*]}"
           echo "  • docs_files = ${DOC_FILES[*]}"
 
-#Criação de Páginas
+  # --- Phase 3: Change Detection ---
+  check-altered-files:
+    name: "Check Changed Files"
+    runs-on: ubuntu-latest
+    needs: [setup-env, check-pages-folders]
+    outputs:
+      docs_changed: ${{ steps.check.outputs.docs_changed }}
+      readme_changed: ${{ steps.check.outputs.readme_changed }}
+      changelog_changed: ${{ steps.check.outputs.changelog_changed }}
+      doc_files_changed: ${{ steps.check.outputs.doc_files_changed }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Get changed files
+        id: changed-files
+        run: |
+            # If github.event.before is empty (e.g., first commit or manual run), fallback to comparing with the previous commit or list all files
+            if [ -z "${{ github.event.before }}" ] || [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+              # If this is the first commit or before is empty, list all tracked files (including added ones)
+              git ls-files > changed_files.txt
+            else
+              git fetch origin ${{ github.event.before }}
+              git diff --name-only ${{ github.event.before }} ${{ github.sha }} > changed_files.txt
+            fi
+            cat changed_files.txt
+            changed_files=$(cat changed_files.txt | tr '\n' ' ')
+            echo "Changed files: $changed_files"
+
+      - name: Check if documentation files changed
+        id: check
+        run: |
+          if grep -qE '^documentation/.*\.md$' changed_files.txt; then
+            echo "Documentation files have changed."
+            echo "docs_changed=true" >> "$GITHUB_OUTPUT"
+            
+            # Get the list of changed documentation files for debugging
+            echo "Changed documentation files:"
+            DOC_FILES_CHANGED=$(grep -E '^documentation/.*\.md$' changed_files.txt)
+            echo "$DOC_FILES_CHANGED"
+            DOC_FILES_CHANGED=($DOC_FILES_CHANGED)
+            echo "DOC_FILES_CHANGED=${DOC_FILES_CHANGED[*]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "No documentation files have changed."
+            echo "docs_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if grep -qE '^README\.md$' changed_files.txt; then
+            echo "README.md has changed."
+            echo "readme_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "README.md has not changed."
+            echo "readme_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if grep -qE '^CHANGELOG\.md$' changed_files.txt; then
+            echo "CHANGELOG.md has changed."
+            echo "changelog_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "CHANGELOG.md has not changed."
+            echo "changelog_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+  
+  # --- Phase 4: Content Creation ---
   create-missing-files:
     name: "Create Missing Documentation Files"
     runs-on: ubuntu-latest
@@ -250,8 +285,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          BASE_PATH_SAFE="${{ needs.setup-env.outputs.BASE_PATH_SAFE }}"
-
           REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
           DOC_PREFIX="$(echo "${REPO_PATH}/documentation/" | sed 's#//*#/#g')"
 
@@ -259,41 +292,11 @@ jobs:
           missing_files=(${{ needs.check-pages-folders.outputs.missing_files }})
           echo "Missing files to create: ${missing_files[*]}"
 
-          sanitize_asset_segment() {
-            local segment="$1"
-            segment="$(echo "$segment" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null)"
-            segment="$(echo "$segment" | tr '[:upper:]' '[:lower:]')"
-            segment="$(echo "$segment" | sed 's/[^a-z0-9._-]/-/g')"
-            segment="$(echo "$segment" | sed 's/-\{2,\}/-/g; s/^-//; s/-$//')"
-            if [ -z "$segment" ]; then
-              segment="assets-folder"
-            fi
-            echo "$segment"
-          }
-
-          build_asset_base_path() {
-            local path="$1"
-            local result=""
-            local oldIFS="$IFS"
-            IFS='/'
-            read -r -a parts <<< "$path"
-            IFS="$oldIFS"
-            for part in "${parts[@]}"; do
-              [ -z "$part" ] && continue
-              local sanitized_part
-              sanitized_part="$(sanitize_asset_segment "$part")"
-              result="${result}/${sanitized_part}"
-            done
-            result="${result#/}"
-            echo "$result"
-          }
-
-          ASSET_BASE_PATH="$(build_asset_base_path "${BASE_PATH:-}")"
-          ASSET_REPO_SEGMENT="$(sanitize_asset_segment "${REPO_NAME:-}")"
-          if [ -n "$ASSET_BASE_PATH" ]; then
-            ASSET_PREFIX="/${ASSET_BASE_PATH}/${ASSET_REPO_SEGMENT}/documentation/"
+          ASSET_PATH_SAFE="${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}"
+          if [ -n "$ASSET_PATH_SAFE" ]; then
+            ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
           else
-            ASSET_PREFIX="/${ASSET_REPO_SEGMENT}/documentation/"
+            ASSET_PREFIX="/documentation/"
           fi
           echo "🔗 Asset prefix: $ASSET_PREFIX"
 
@@ -364,7 +367,7 @@ jobs:
   create-readme-page:
     name: "Create README Page if missing"
     runs-on: ubuntu-latest
-    needs: [check-pages-folders]
+    needs: [setup-env, check-pages-folders]
     if: needs.check-pages-folders.outputs.has_readme_page == 'false'
     steps:
       - name: Checkout Repo
@@ -459,7 +462,7 @@ jobs:
   create-changelog-page:
     name: "Create CHANGELOG Page if missing"
     runs-on: ubuntu-latest
-    needs: [check-pages-folders, create-readme-page]
+    needs: [setup-env, check-pages-folders, create-readme-page]
     if: needs.check-pages-folders.outputs.has_changelog_page == 'false'
     steps:
       - name: Checkout Repo
@@ -539,12 +542,12 @@ jobs:
           fi
 
 
-# Updates de Páginas
+  # --- Phase 5: Content Updates ---
   update-docs-content:
     name: "Update Documentation Files in Wiki"
     runs-on: ubuntu-latest
-    needs: [check-pages-folders, check-altered-files]
-    if: always()
+    needs: [setup-env, check-pages-folders, check-altered-files]
+    if: needs.check-pages-folders.outputs.has_repo_path == 'true' && needs.check-altered-files.outputs.docs_changed == 'true'
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -673,8 +676,8 @@ jobs:
   update-readme-content:
     name: "Update ReadMe in Wiki"
     runs-on: ubuntu-latest
-    needs: [check-pages-folders, check-altered-files]
-    if: needs.check-altered-files.outputs.readme_changed == 'true'
+    needs: [setup-env, check-pages-folders, check-altered-files]
+    if: needs.check-pages-folders.outputs.has_repo_path == 'true' && needs.check-altered-files.outputs.readme_changed == 'true'
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -754,8 +757,8 @@ jobs:
   update-changelog-content:
     name: "Update Changelog in Wiki"
     runs-on: ubuntu-latest
-    needs: [check-pages-folders, check-altered-files, update-readme-content]
-    if: needs.check-altered-files.outputs.changelog_changed == 'true'
+    needs: [setup-env, check-pages-folders, check-altered-files, update-readme-content]
+    if: needs.check-pages-folders.outputs.has_repo_path == 'true' && needs.check-altered-files.outputs.changelog_changed == 'true'
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -827,13 +830,15 @@ jobs:
             exit 1
           fi
 
-# Upload de Mídia
+  # --- Phase 6: Asset Upload ---
   upload-docs-media:
     name: "Upload Documentation Media"
     runs-on: ubuntu-latest
-    needs: [setup-env]
+    needs: [setup-env, check-pages-folders, check-altered-files]
+    if: needs.check-pages-folders.outputs.has_repo_path == 'false' || needs.check-altered-files.outputs.docs_changed == 'true' || needs.check-altered-files.outputs.readme_changed == 'true' || needs.check-altered-files.outputs.changelog_changed == 'true'
     env:
       BASE_PATH_SAFE: ${{ needs.setup-env.outputs.BASE_PATH_SAFE }}
+      ASSET_PATH_SAFE: ${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}
       PARENT_FOLDER_ID: "1"
     steps:
       - name: Checkout Repo
@@ -866,7 +871,11 @@ jobs:
 
           # === CONFIGURAÇÃO ===
           APP_NAME="${APP_NAME,,}"  # lowercase
-          ASSET_FOLDER_PATH="${BASE_PATH}/${APP_NAME}/documentation"
+          if [ -n "${ASSET_PATH_SAFE:-}" ]; then
+            ASSET_FOLDER_PATH="${ASSET_PATH_SAFE}/documentation"
+          else
+            ASSET_FOLDER_PATH="${BASE_PATH}/${APP_NAME}/documentation"
+          fi
 
           BASE_URL="${WIKI_URL%/}"
           if [[ "$BASE_URL" =~ /graphql$ ]]; then
