@@ -712,7 +712,7 @@ jobs:
           fi
 
       - name: Update README content in Wiki.js
-        if: steps.find_readme.outputs.found == 'true'
+        if: needs.check-altered-files.outputs.readme_changed == 'true' && steps.find_readme.outputs.found == 'true'
         run: |
           set -euo pipefail
           PAGE_ID="${{ steps.find_readme.outputs.page_id }}"
@@ -794,7 +794,7 @@ jobs:
           fi
 
       - name: Update CHANGELOG content in Wiki.js
-        if: steps.find_changelog.outputs.found == 'true'
+        if: needs.check-altered-files.outputs.changelog_changed == 'true' && steps.find_changelog.outputs.found == 'true'
         run: |
           set -euo pipefail
           PAGE_ID="${{ steps.find_changelog.outputs.page_id }}"
