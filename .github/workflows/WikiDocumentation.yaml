@@ -727,7 +727,8 @@ jobs:
           QUERY='mutation ($id: Int!, $content: String!, $locale: String!) {
             pages {
               update(id: $id, content: $content, editor: "markdown",
-                     isPrivate: false, isPublished: true, locale: $locale) {
+                     isPrivate: false, isPublished: true, locale: $locale,
+                     tags: [], description: "") {
                 responseResult { succeeded message }
               }
             }
