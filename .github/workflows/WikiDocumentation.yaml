@@ -87,6 +87,25 @@ jobs:
           echo "ASSET_PATH_SAFE=$asset_safe"
           echo "ASSET_PATH_SAFE=$asset_safe" >> "$GITHUB_OUTPUT"
 
+      - name: Save shared Bash functions
+        run: |
+          mkdir -p scripts
+          cat > scripts/fix_paths.sh <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          fix_image_paths() {
+            local file="$1"
+            local prefix="/${ASSET_PATH_SAFE}/documentation/"
+
+            sed -E "
+              s#\]\((<?)(\./)?documentation/#](\1${prefix}#g;
+              s#^(\[[^\]]+\]:[[:space:]]*)(<?)(\./)?documentation/#\1\2${prefix}#g;
+              s#!\[([^\]]*)\]\(([A-Za-z0-9._-]+\.(png|jpg|jpeg|gif|svg|webp|drawio|pdf))\)#![\1](${prefix}\2)#g;
+            " "\$file"
+          }
+          EOF
+
   # --- Phase 2: Wiki Discovery ---
   check-pages-folders:
     name: "Check if Pages and Folders are created"
@@ -285,6 +304,9 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Importar função partilhada
+          source scripts/fix_paths.sh
+
           REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
           DOC_PREFIX="$(echo "${REPO_PATH}/documentation/" | sed 's#//*#/#g')"
 
@@ -303,32 +325,45 @@ jobs:
             echo "  • Will create: $FILE"
             src_md="documentation/$(basename "$FILE").md"
 
-            # Corrigir paths de imagens antes de enviar para o GraphQL
+            if [ ! -f "$src_md" ]; then
+              echo "⚠️ Ficheiro não encontrado: $src_md"
+              continue
+            fi
+
             echo "🔧 Corrigindo paths de imagens em $src_md"
             CONTENT=$(tr -d '\r' < "$src_md")
-            CONTENT=$(
-              printf '%s\n' "$CONTENT" | sed -E \
-                -e "s#\]\((<?)((\./)|/|((\.\./)+))?documentation/#](\1${ASSET_PREFIX}#g" \
-                -e "s#^(\[[^]]+\]:[[:space:]]*)(<?)((\./)|/|((\.\./)+))?documentation/#\1\2${ASSET_PREFIX}#g"
-            )
+            CONTENT=$(printf '%s\n' "$CONTENT" | fix_image_paths /dev/stdin)
 
-            # Limpeza adicional dos links de markdown para outros .md internos (mantém só ./documentation)
+            # Limpeza adicional de links relativos a outros .md
             CONTENT=$(
               printf '%s\n' "$CONTENT" | sed -E \
-                -e "s#\]\((<?)[[:space:]]*${ASSET_PREFIX}([^)]*)\.md([?#][^)]*)\)#](\1./documentation/\2\3)#g" \
-                -e "s#\]\((<?)[[:space:]]*${ASSET_PREFIX}([^)]*)\.md\)#](\1./documentation/\2)#g" \
                 -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
                 -e 's#\]\([[:space:]]*documentation/#](./documentation/#g' \
                 -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md([?#][^)]*)\)#](./documentation/\1\2)#g' \
                 -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
             )
 
-            CONTENT_JSON=$(jq -n --arg c "$CONTENT" '$c')
-
             TITLE="$(basename "$FILE")"
             echo "    - Title: $TITLE"
 
-            QUERY='mutation ($content: String!, $locale: String!, $path: String!, $title: String!) { pages { create(path: $path, title: $title, content: $content, editor: "markdown", isPrivate: false, isPublished: true, locale: $locale, tags: [], description: "") { responseResult { succeeded slug message } page { id title path updatedAt } } } }'
+            QUERY='mutation ($content: String!, $locale: String!, $path: String!, $title: String!) {
+              pages {
+                create(
+                  path: $path,
+                  title: $title,
+                  content: $content,
+                  editor: "markdown",
+                  isPrivate: false,
+                  isPublished: true,
+                  locale: $locale,
+                  tags: [],
+                  description: ""
+                ) {
+                  responseResult { succeeded slug message }
+                  page { id title path updatedAt }
+                }
+              }
+            }'
 
             JSON_PAYLOAD=$(jq -n \
               --arg q "$QUERY" \
@@ -363,7 +398,6 @@ jobs:
               echo "$RESULT" | jq .errors
               exit 1
             fi
-
           done
   
   create-readme-page:
@@ -381,38 +415,31 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Importar função partilhada
+          source scripts/fix_paths.sh
+
           # ------------------------------------------------------------
-          # 1️⃣ Construir o caminho REPO_PATH de forma segura
+          # 🧭 Caminhos principais
           # ------------------------------------------------------------
           REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
           README_PATH="$(echo "${REPO_PATH}/readme" | sed 's#//*#/#g')"
-
-          echo "📂 BASE_PATH: ${BASE_PATH}"
           echo "📄 REPO_PATH: ${REPO_PATH}"
           echo "📘 README_PATH: ${README_PATH}"
 
-          ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
-          if [ -z "${ASSET_PATH_SAFE:-}" ]; then
-            ASSET_PREFIX="/documentation/"
-          fi
-
-          # ------------------------------------------------------------
-          # 3️⃣ Ler o conteúdo do README.md (sem CRLF)
-          # ------------------------------------------------------------
           if [ ! -f README.md ]; then
             echo "❌ README.md não encontrado no repositório."
             exit 1
           fi
-          CONTENT=$(tr -d '\r' < README.md)
-
-          CONTENT=$(
-            printf '%s\n' "$CONTENT" | sed -E \
-              -e "s#\]\((<?)(\./)?documentation/#](\1${ASSET_PREFIX}#g" \
-              -e "s#^(\[[^\]]+\]:[[:space:]]*)(<?)(\./)?documentation/#\1\2${ASSET_PREFIX}#g"
-          )
 
           # ------------------------------------------------------------
-          # 4️⃣ Reescrever links relativos (para documentação local)
+          # ✏️ Corrigir paths e ler conteúdo
+          # ------------------------------------------------------------
+          echo "🔧 Corrigindo paths de imagens em README.md"
+          CONTENT=$(tr -d '\r' < README.md)
+          CONTENT=$(printf '%s\n' "$CONTENT" | fix_image_paths /dev/stdin)
+
+          # ------------------------------------------------------------
+          # 🔗 Reescrever links relativos (markdown internos)
           # ------------------------------------------------------------
           CONTENT=$(
             printf '%s\n' "$CONTENT" | sed -E \
@@ -423,7 +450,7 @@ jobs:
           )
 
           # ------------------------------------------------------------
-          # 5️⃣ Construir query GraphQL
+          # 🚀 Criar página via GraphQL
           # ------------------------------------------------------------
           QUERY='mutation ($content: String!, $locale: String!, $path: String!) {
             pages {
@@ -451,10 +478,6 @@ jobs:
             --arg path "$README_PATH" \
             '{ query: $q, variables: { content: $content, locale: $loc, path: $path } }')
 
-          # ------------------------------------------------------------
-          # 6️⃣ Enviar para Wiki.js
-          # ------------------------------------------------------------
-          echo "🚀 Enviando para Wiki.js..."
           RESULT=$(curl -s -X POST "$WIKI_URL" \
             -H "Authorization: Bearer $WIKI_API_TOKEN" \
             -H "Content-Type: application/json" \
@@ -465,14 +488,12 @@ jobs:
           SUCCEEDED=$(echo "$RESULT" | jq -r '.data.pages.create.responseResult.succeeded // empty')
           if [ "$SUCCEEDED" = "true" ]; then
             PAGE_ID=$(echo "$RESULT" | jq -r .data.pages.create.page.id)
-            echo "✅ Página criada com sucesso!"
-            echo "🆔 Page ID: $PAGE_ID"
+            echo "✅ Página README criada com sucesso! (ID: $PAGE_ID)"
           else
             echo "⚠️ Falha ao criar página README"
             echo "$RESULT" | jq -r '.data.pages.create.responseResult.message'
             exit 1
           fi
-
   
   create-changelog-page:
     name: "Create CHANGELOG Page if missing"
