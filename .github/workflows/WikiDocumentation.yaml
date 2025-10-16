@@ -554,6 +554,7 @@ jobs:
 
       - name: Query Wiki.js for existing pages
         id: query
+        if: needs.check-altered-files.outputs.docs_changed == 'true'
         run: |
           set -euo pipefail
           echo "🔍 Querying Wiki.js for existing pages..."
@@ -579,6 +580,7 @@ jobs:
           echo "✅ Exported page IDs to environment."
 
       - name: Update the Files in Wiki
+        if: needs.check-altered-files.outputs.doc_files_changed != ''
         run: |
           set -euo pipefail
 
@@ -684,6 +686,7 @@ jobs:
 
       - name: Find README page ID in Wiki.js
         id: find_readme
+        if: needs.check-altered-files.outputs.readme_changed == 'true'
         run: |
           set -euo pipefail
           echo "🔍 Searching README page in Wiki.js..."
@@ -766,6 +769,7 @@ jobs:
 
       - name: Find CHANGELOG page ID in Wiki.js
         id: find_changelog
+        if: needs.check-altered-files.outputs.changelog_changed == 'true'
         run: |
           set -euo pipefail
           echo "🔍 Searching CHANGELOG page in Wiki.js..."
