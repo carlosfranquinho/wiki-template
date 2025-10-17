@@ -253,39 +253,52 @@ jobs:
       - name: Get changed files
         id: changed-files
         run: |
-          # Fallback se for o primeiro commit ou trigger manual
-          if [ -z "${{ github.event.before }}" ] || [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
-            git ls-files > changed_files.txt
+          set -euo pipefail
+          BEFORE="${{ github.event.before }}"
+          ZERO="0000000000000000000000000000000000000000"
+
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "$ZERO" ]; then
+            # Run manual / sem 'before': se houver commit pai, difere HEAD^..HEAD;
+            # senão, considera apenas ficheiros do último commit.
+            if git rev-parse HEAD^ >/dev/null 2>&1; then
+              git diff --name-only --diff-filter=AM HEAD^ HEAD > changed_files.txt
+            else
+              git show --name-only --pretty="" --diff-filter=AM HEAD > changed_files.txt
+            fi
           else
-            git fetch origin ${{ github.event.before }}
-            git diff --name-only --diff-filter=AM ${{ github.event.before }} ${{ github.sha }} > changed_files.txt
+            git fetch origin "$BEFORE" --depth=1 || true
+            git diff --name-only --diff-filter=AM "$BEFORE" ${{ github.sha }} > changed_files.txt
           fi
-          cat changed_files.txt
+
+          echo "🔍 Changed files:"
+          cat changed_files.txt || true
 
       - name: Check if documentation files changed
         id: check
         run: |
+          set -euo pipefail
+
+          # Docs  
           if grep -qE '^documentation/.+\.md$' changed_files.txt; then
-            echo "Documentation files have changed."
             echo "docs_changed=true" >> "$GITHUB_OUTPUT"
             DOC_FILES_CHANGED=$(grep -E '^documentation/.+\.md$' changed_files.txt | tr -d '\r' | xargs)
-            echo "Changed documentation files: $DOC_FILES_CHANGED"
-            echo "DOC_FILES_CHANGED=$DOC_FILES_CHANGED" >> "$GITHUB_OUTPUT"
+            echo "doc_files_changed=${DOC_FILES_CHANGED}" >> "$GITHUB_OUTPUT"
+            echo "Changed documentation files: ${DOC_FILES_CHANGED}"
           else
             echo "docs_changed=false" >> "$GITHUB_OUTPUT"
+            echo "doc_files_changed=" >> "$GITHUB_OUTPUT"
           fi
 
-          if grep -qE '^README\.md$' changed_files.txt; then
-            echo "readme_changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "readme_changed=false" >> "$GITHUB_OUTPUT"
-          fi
+          # README
+          grep -qE '^README\.md$' changed_files.txt \
+            && echo "readme_changed=true"  >> "$GITHUB_OUTPUT" \
+            || echo "readme_changed=false" >> "$GITHUB_OUTPUT"
 
-          if grep -qE '^CHANGELOG\.md$' changed_files.txt; then
-            echo "changelog_changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changelog_changed=false" >> "$GITHUB_OUTPUT"
-          fi
+          # CHANGELOG
+          grep -qE '^CHANGELOG\.md$' changed_files.txt \
+            && echo "changelog_changed=true"  >> "$GITHUB_OUTPUT" \
+            || echo "changelog_changed=false" >> "$GITHUB_OUTPUT"
+
   
   # --- Phase 4: Content Creation ---
   create-pages:
