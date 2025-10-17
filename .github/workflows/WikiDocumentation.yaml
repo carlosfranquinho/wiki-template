@@ -636,13 +636,28 @@ jobs:
           set -euo pipefail
 
           echo "🔍 Detecting new or modified media files in documentation/"
-          git fetch --depth=2 origin main >/dev/null 2>&1 || true
 
-          # Determina o commit base (último em main, ou o anterior no histórico local)
-          BASE_REF=$(git rev-parse origin/main 2>/dev/null || git rev-parse HEAD~1)
-          echo "Comparing against base: $BASE_REF"
+          # Garante que temos histórico completo
+          git fetch --prune --unshallow || git fetch --all
+          git fetch origin main || true
 
-          # Lista de ficheiros alterados ou adicionados (exclui .md)
+          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          echo "Current branch: $CURRENT_BRANCH"
+
+          # Determina o commit base
+          if git rev-parse origin/main >/dev/null 2>&1; then
+            BASE_REF=$(git merge-base HEAD origin/main)
+          else
+            BASE_REF=$(git rev-list --max-parents=0 HEAD | head -n1)
+          fi
+
+          echo "Comparing against base commit: $BASE_REF"
+          echo "Changed files since base:"
+
+          # Mostra tudo o que mudou em documentation/
+          git diff --name-only "$BASE_REF" HEAD -- 'documentation/' || true
+
+          # Filtra apenas media (exclui .md)
           CHANGED_MEDIA=$(git diff --name-only "$BASE_REF" HEAD -- 'documentation/' | grep -v '\.md$' || true)
 
           if [ -z "$CHANGED_MEDIA" ]; then
