@@ -623,7 +623,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: [setup-env]
     if: always()
-
     env:
       ASSET_PATH_SAFE: ${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}
 
@@ -645,21 +644,16 @@ jobs:
             echo "MEDIA_FILES=$(echo "$MEDIA_FILES" | paste -sd ';' -)" >> "$GITHUB_ENV"
           fi
 
-      - name: Upload Media Files
-        if: env.MEDIA_FILES != ''
+      - name: Ensure base asset folder exists
+        id: create-folder
         env:
           WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
         run: |
           set -euo pipefail
 
-          # --- Setup URLs ---
           BASE_URL="${WIKI_URL%/graphql}"
           GRAPHQL_URL="${BASE_URL%/}/graphql"
-          UPLOAD_URL="${BASE_URL%/}/u"
 
-          echo "📡 Upload endpoint: $UPLOAD_URL"
-
-          # --- Utils ---
           slugify() {
             echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[[:space:]]+/-/g; s/[^a-z0-9._-]+/-/g; s/-{2,}/-/g; s/^-+|-+$//g'
           }
@@ -672,76 +666,68 @@ jobs:
               --data "$payload"
           }
 
-          declare -A FOLDER_CACHE=()
-
           ensure_folder() {
             local parent="$1"
             local name="$2"
             local slug; slug=$(slugify "$name")
-            local key="${parent}:${slug}"
-
-            if [[ -n "${FOLDER_CACHE[$key]:-}" ]]; then
-              echo "${FOLDER_CACHE[$key]}"; return
-            fi
 
             local query result id
-            query='query($pid:Int!){assets{folders(parentFolderId:$pid){id name slug}}}'
-            result=$(call_graphql "$(jq -n --arg q "$query" --argjson pid "$parent" '{query:$q,variables:{pid:$pid}}')")
-            id=$(echo "$result" | jq -r --arg slug "$slug" --arg name "$name" '
-              .data.assets.folders[]? | select((.slug==$slug) or (.name|ascii_downcase==$name|ascii_downcase)) | .id' | head -n1)
+            query="query { assets { folders(parentFolderId: $parent) { id name slug } } }"
+            result=$(call_graphql "$(jq -n --arg q "$query" '{query:$q}')")
+            id=$(echo "$result" | jq -r --arg slug "$slug" --arg name "$name" '.data.assets.folders[]? | select((.slug==$slug) or (.name|ascii_downcase==$name|ascii_downcase)) | .id' | head -n1)
 
             if [ -n "$id" ] && [ "$id" != "null" ]; then
-              FOLDER_CACHE[$key]="$id"; echo "$id"; return
+              echo "$id"; return
             fi
 
-            local mutation='mutation($pid:Int!,$slug:String!,$name:String!){assets{createFolder(parentFolderId:$pid,slug:$slug,name:$name){folder{id}}}}'
-            result=$(call_graphql "$(jq -n --arg q "$mutation" --argjson pid "$parent" --arg slug "$slug" --arg name "$name" '{query:$q,variables:{pid:$pid,slug:$slug,name:$name}}')")
+            local mutation="mutation { assets { createFolder(parentFolderId: $parent, slug: \"$slug\", name: \"$name\") { folder { id } } } }"
+            result=$(call_graphql "$(jq -n --arg q "$mutation" '{query:$q}')")
             id=$(echo "$result" | jq -r '.data.assets.createFolder.folder.id')
             if [ -z "$id" ] || [ "$id" = "null" ]; then
               echo "❌ Failed to create folder '$name' (parent $parent)" >&2; exit 1
             fi
-            FOLDER_CACHE[$key]="$id"; echo "$id"
+            echo "$id"
           }
 
-          ensure_path() {
-            local parent="$1"
-            local path="$2"
-            local current="$parent"
-            IFS='/' read -ra parts <<< "$path"
-            for part in "${parts[@]}"; do
-              [ -z "$part" ] && continue
-              current=$(ensure_folder "$current" "$part")
-            done
-            echo "$current"
-          }
+          # criar hierarquia base pedro/aplicacoes/app/documentation
+          echo "📂 Ensuring asset folder path: $ASSET_PATH_SAFE/documentation"
+          CURRENT_PARENT=0
+          IFS='/' read -ra PARTS <<< "$ASSET_PATH_SAFE/documentation"
+          for PART in "${PARTS[@]}"; do
+            [ -z "$PART" ] && continue
+            CURRENT_PARENT=$(ensure_folder "$CURRENT_PARENT" "$PART")
+            echo "✓ Folder '$PART' id=$CURRENT_PARENT"
+          done
 
-          # --- Determinar pasta-base ---
-          ASSET_FOLDER_PATH="${ASSET_PATH_SAFE}/documentation"
-          echo "📂 Ensuring asset path exists: $ASSET_FOLDER_PATH"
-          ROOT_ID=$(ensure_path 0 "$ASSET_FOLDER_PATH")
-          echo "📦 Base folder ID = $ROOT_ID"
+          echo "DOC_ROOT_FOLDER_ID=$CURRENT_PARENT" >> "$GITHUB_ENV"
 
-          # --- Upload files ---
+      - name: Upload Media Files
+        if: env.MEDIA_FILES != ''
+        env:
+          WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          BASE_URL="${WIKI_URL%/graphql}"
+          UPLOAD_URL="${BASE_URL%/}/u"
+
+          echo "📡 Upload endpoint: $UPLOAD_URL"
+          echo "📦 Root folder id: ${DOC_ROOT_FOLDER_ID}"
+
           FAILED=0
           IFS=';' read -ra FILES <<< "$MEDIA_FILES"
 
           for filepath in "${FILES[@]}"; do
             [ -z "$filepath" ] && continue
             if [ ! -f "$filepath" ]; then
-              echo "⚠️  File '$filepath' not found, skipping."
-              continue
+              echo "⚠️  Missing local file '$filepath'"; continue
             fi
 
-            rel_path="${filepath#documentation/}"
-            rel_dir="${rel_path%/*}"
-            folder_id="$ROOT_ID"
-            [ "$rel_dir" != "$rel_path" ] && folder_id=$(ensure_path "$ROOT_ID" "$rel_dir")
-
-            echo "⬆️  Uploading '$filepath' → folder_id=$folder_id"
+            echo "⬆️  Uploading '$filepath'..."
             RESPONSE=$(curl -sS -w "\n%{http_code}" -X POST "$UPLOAD_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
-              -F "mediaUpload={\"folderId\":$folder_id}" \
+              -F "mediaUpload={\"folderId\":${DOC_ROOT_FOLDER_ID}}" \
               -F "mediaUpload=@$filepath")
+
             HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
             BODY=$(echo "$RESPONSE" | sed '$d')
 
@@ -760,3 +746,4 @@ jobs:
           fi
 
           echo "✅ All media uploaded successfully."
+
