@@ -346,17 +346,26 @@ jobs:
           }
 
           get_page_id() {
-            local path="$1"
-            local seg=$(basename "$path")
+            local rel_path="$1"       # Ex: Pedro/Aplicações/App-One/readme
+            local base="$BASE_PATH"   # Ex: Pedro/Aplicações
+            local repo="$REPO_NAME"   # Ex: App One
 
+            # Cria slug seguro do nome do repositório (sem acentos, espaços → hifens)
+            local repo_slug
+            repo_slug=$(echo "$repo" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | \
+                        sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')
+
+            # Caminho completo do repositório na wiki (prefixo obrigatório)
+            local repo_prefix="${base}/${repo_slug}"   # Ex: Pedro/Aplicações/App-One
+
+            # Query GraphQL para listar páginas
             local QUERY='query ($locale: String!) {
-              pages {
-                list(locale: $locale) { id title path }
-              }
+              pages { list(locale: $locale) { id path } }
             }'
 
             local PAYLOAD
-            PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" '{query:$q,variables:{locale:$loc}}')
+            PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" \
+                      '{query:$q,variables:{locale:$loc}}')
 
             local RESULT
             RESULT=$(curl -sS -X POST "$WIKI_URL" \
@@ -364,12 +373,14 @@ jobs:
               -H "Content-Type: application/json" \
               --data "$PAYLOAD")
 
-            echo "$RESULT" | jq -r --arg base "$BASE_PATH" --arg seg "$seg" '
-              .data.pages.list[]?
-              | select(.path | startswith($base))
-              | select((.path | ascii_downcase | gsub("[^a-z0-9/_-]"; "")) | endswith(($seg | ascii_downcase | gsub("[^a-z0-9/_-]"; ""))))
-              | .id
-            ' | head -n 1
+            # Filtra apenas páginas dentro do repositório atual e com caminho exato
+            echo "$RESULT" | jq -r \
+              --arg prefix "/${repo_prefix}" --arg target "/${rel_path}" '
+                .data.pages.list[]?
+                | select(.path | startswith($prefix))
+                | select(.path == $target)
+                | .id
+              ' | head -n 1
           }
 
           update_wiki_page() {
@@ -455,7 +466,7 @@ jobs:
             fi
           }
           EOF
-                  chmod +x scripts/wiki_utils.sh
+          chmod +x scripts/wiki_utils.sh
 
       - name: Create pages in Wiki.js
         run: |
