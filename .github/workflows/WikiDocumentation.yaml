@@ -42,7 +42,6 @@ jobs:
     name: "Setup Environment"
     runs-on: ubuntu-latest
     outputs:
-      # removed BASE_PATH_SAFE (unused)
       ASSET_PATH_SAFE: ${{ steps.export.outputs.ASSET_PATH_SAFE }}
     steps:
       - name: Compute ASSET_PATH_SAFE
@@ -281,8 +280,131 @@ jobs:
             echo "CHANGELOG_CHANGED=false" >> "$GITHUB_OUTPUT"
           fi
 
+  # --- Phase 4: Asset Upload (always sync all media) ---
+  upload-docs-media:
+    name: "Upload Documentation Media"
+    runs-on: ubuntu-latest
+    needs: [setup-env]
+    env:
+      ASSET_PATH_SAFE: ${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Collect Media Files
+        id: collect
+        run: |
+          set -euo pipefail
+          echo "🔍 Collecting all media files in documentation/ (excluding .md)..."
+          MEDIA_FILES=$(find documentation/ -type f ! -name "*.md" 2>/dev/null || true)
+
+          if [ -z "$MEDIA_FILES" ]; then
+            echo "ℹ️  No media files found."
+            echo "MEDIA_FILES=" >> "$GITHUB_ENV"
+          else
+            echo "📸 Found media files:"
+            echo "$MEDIA_FILES"
+            echo "MEDIA_FILES=$(echo "$MEDIA_FILES" | paste -sd ';' -)" >> "$GITHUB_ENV"
+          fi
+
+      - name: Ensure asset folder structure exists
+        if: env.MEDIA_FILES != ''
+        env:
+          WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          APP_PATH="${ASSET_PATH_SAFE}/documentation"
+          BASE_URL="${WIKI_URL%/graphql}"
+          GRAPHQL_URL="${BASE_URL}/graphql"
+          UPLOAD_URL="${BASE_URL}/u"
+
+          slugify() {
+            echo "$1" | tr '[:upper:]' '[:lower:]' |
+              sed -E 's/[[:space:]]+/-/g; s/[^a-z0-9._-]+/-/g; s/-{2,}/-/g; s/^-+|-+$//g'
+          }
+
+          get_folder_id() {
+            local parent="$1"; local name="$2"
+            [[ -z "$parent" ]] && parent=0
+            local slug; slug=$(slugify "$name")
+            local q="query { assets { folders(parentFolderId: $parent) { id name slug } } }"
+            local r=$(curl -s -X POST "$GRAPHQL_URL" \
+              -H "Authorization: Bearer $WIKI_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "$(jq -n --arg q "$q" '{query:$q}')")
+            echo "$r" | jq -r --arg s "$slug" --arg n "$name" \
+              '.data.assets.folders[]? | select((.slug==$s) or ((.name|ascii_downcase)==($n|ascii_downcase))) | .id' | head -n1
+          }
+
+          create_folder() {
+            local parent="$1"; local name="$2"
+            [[ -z "$parent" ]] && parent=0
+            local slug; slug=$(slugify "$name")
+            local m="mutation { assets { createFolder(parentFolderId: $parent, slug:\"$slug\", name:\"$name\") { responseResult { succeeded message } } } }"
+            local r=$(curl -s -X POST "$GRAPHQL_URL" \
+              -H "Authorization: Bearer $WIKI_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "$(jq -n --arg q "$m" '{query:$q}')")
+            echo "$r" | jq . >/dev/null
+          }
+
+          echo "📂 Ensuring folder path: $APP_PATH"
+          IFS='/' read -ra PARTS <<< "$APP_PATH"
+          CURRENT_PARENT=""
+
+          for PART in "${PARTS[@]}"; do
+            [ -z "$PART" ] && continue
+            ID=$(get_folder_id "$CURRENT_PARENT" "$PART" | head -n1 || true)
+            if [[ -z "$ID" || "$ID" == "null" ]]; then
+              echo "Creating '$PART'..."
+              create_folder "$CURRENT_PARENT" "$PART"
+              ID=$(get_folder_id "$CURRENT_PARENT" "$PART" | head -n1 || true)
+            fi
+            echo "✓ '$PART' id=$ID"
+            CURRENT_PARENT="$ID"
+          done
+
+          echo "DOC_ROOT_FOLDER_ID=$CURRENT_PARENT" >> "$GITHUB_ENV"
+          echo "UPLOAD_URL=$UPLOAD_URL" >> "$GITHUB_ENV"
+
+      - name: Upload all media files
+        if: env.MEDIA_FILES != ''
+        env:
+          WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          IFS=';' read -ra FILES <<< "$MEDIA_FILES"
+          FAILED=0
+
+          for filepath in "${FILES[@]}"; do
+            [ -z "$filepath" ] && continue
+            if [ ! -f "$filepath" ]; then
+              echo "⚠️  Missing file: $filepath"
+              continue
+            fi
+            echo "⬆️ Uploading '$filepath'..."
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$UPLOAD_URL" \
+              -H "Authorization: Bearer $WIKI_API_TOKEN" \
+              -F "mediaUpload={\"folderId\":${DOC_ROOT_FOLDER_ID}}" \
+              -F "mediaUpload=@$filepath")
+            CODE=$(echo "$RESPONSE" | tail -n1)
+            BODY=$(echo "$RESPONSE" | sed '$d')
+
+            if [[ "$CODE" =~ ^2 ]]; then
+              echo "✅ Uploaded: $filepath"
+            else
+              echo "❌ Upload failed ($CODE): $filepath"
+              echo "$BODY" | jq . || echo "$BODY"
+              FAILED=$((FAILED+1))
+            fi
+          done
+
+          [ "$FAILED" -gt 0 ] && exit 1
+          echo "✅ Media sync complete."
+
   
-  # --- Phase 4: Content Creation ---
+  # --- Phase 5: Content Creation ---
   create-pages:
     name: "Create Missing Wiki Pages"
     runs-on: ubuntu-latest
@@ -418,7 +540,7 @@ jobs:
           fi
 
 
-  # --- Phase 5: Content Updates ---
+  # --- Phase 6: Content Updates ---
   update-pages:
     name: "Update Wiki Pages"
     runs-on: ubuntu-latest
@@ -615,127 +737,3 @@ jobs:
           else
             echo "ℹ️ No documentation files changed."
           fi
-
-
-  # --- Phase 6: Asset Upload (always sync all media) ---
-  upload-docs-media:
-    name: "Upload Documentation Media"
-    runs-on: ubuntu-latest
-    needs: [setup-env, check-pages-folders]
-    env:
-      ASSET_PATH_SAFE: ${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}
-
-    steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v4
-
-      - name: Collect Media Files
-        id: collect
-        run: |
-          set -euo pipefail
-          echo "🔍 Collecting all media files in documentation/ (excluding .md)..."
-          MEDIA_FILES=$(find documentation/ -type f ! -name "*.md" 2>/dev/null || true)
-
-          if [ -z "$MEDIA_FILES" ]; then
-            echo "ℹ️  No media files found."
-            echo "MEDIA_FILES=" >> "$GITHUB_ENV"
-          else
-            echo "📸 Found media files:"
-            echo "$MEDIA_FILES"
-            echo "MEDIA_FILES=$(echo "$MEDIA_FILES" | paste -sd ';' -)" >> "$GITHUB_ENV"
-          fi
-
-      - name: Ensure asset folder structure exists
-        if: env.MEDIA_FILES != ''
-        env:
-          WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
-        run: |
-          set -euo pipefail
-          APP_PATH="${ASSET_PATH_SAFE}/documentation"
-          BASE_URL="${WIKI_URL%/graphql}"
-          GRAPHQL_URL="${BASE_URL}/graphql"
-          UPLOAD_URL="${BASE_URL}/u"
-
-          slugify() {
-            echo "$1" | tr '[:upper:]' '[:lower:]' |
-              sed -E 's/[[:space:]]+/-/g; s/[^a-z0-9._-]+/-/g; s/-{2,}/-/g; s/^-+|-+$//g'
-          }
-
-          get_folder_id() {
-            local parent="$1"; local name="$2"
-            [[ -z "$parent" ]] && parent=0
-            local slug; slug=$(slugify "$name")
-            local q="query { assets { folders(parentFolderId: $parent) { id name slug } } }"
-            local r=$(curl -s -X POST "$GRAPHQL_URL" \
-              -H "Authorization: Bearer $WIKI_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data "$(jq -n --arg q "$q" '{query:$q}')")
-            echo "$r" | jq -r --arg s "$slug" --arg n "$name" \
-              '.data.assets.folders[]? | select((.slug==$s) or ((.name|ascii_downcase)==($n|ascii_downcase))) | .id' | head -n1
-          }
-
-          create_folder() {
-            local parent="$1"; local name="$2"
-            [[ -z "$parent" ]] && parent=0
-            local slug; slug=$(slugify "$name")
-            local m="mutation { assets { createFolder(parentFolderId: $parent, slug:\"$slug\", name:\"$name\") { responseResult { succeeded message } } } }"
-            local r=$(curl -s -X POST "$GRAPHQL_URL" \
-              -H "Authorization: Bearer $WIKI_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data "$(jq -n --arg q "$m" '{query:$q}')")
-            echo "$r" | jq . >/dev/null
-          }
-
-          echo "📂 Ensuring folder path: $APP_PATH"
-          IFS='/' read -ra PARTS <<< "$APP_PATH"
-          CURRENT_PARENT=""
-
-          for PART in "${PARTS[@]}"; do
-            [ -z "$PART" ] && continue
-            ID=$(get_folder_id "$CURRENT_PARENT" "$PART" | head -n1 || true)
-            if [[ -z "$ID" || "$ID" == "null" ]]; then
-              echo "Creating '$PART'..."
-              create_folder "$CURRENT_PARENT" "$PART"
-              ID=$(get_folder_id "$CURRENT_PARENT" "$PART" | head -n1 || true)
-            fi
-            echo "✓ '$PART' id=$ID"
-            CURRENT_PARENT="$ID"
-          done
-
-          echo "DOC_ROOT_FOLDER_ID=$CURRENT_PARENT" >> "$GITHUB_ENV"
-          echo "UPLOAD_URL=$UPLOAD_URL" >> "$GITHUB_ENV"
-
-      - name: Upload all media files
-        if: env.MEDIA_FILES != ''
-        env:
-          WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
-        run: |
-          set -euo pipefail
-          IFS=';' read -ra FILES <<< "$MEDIA_FILES"
-          FAILED=0
-
-          for filepath in "${FILES[@]}"; do
-            [ -z "$filepath" ] && continue
-            if [ ! -f "$filepath" ]; then
-              echo "⚠️  Missing file: $filepath"
-              continue
-            fi
-            echo "⬆️ Uploading '$filepath'..."
-            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$UPLOAD_URL" \
-              -H "Authorization: Bearer $WIKI_API_TOKEN" \
-              -F "mediaUpload={\"folderId\":${DOC_ROOT_FOLDER_ID}}" \
-              -F "mediaUpload=@$filepath")
-            CODE=$(echo "$RESPONSE" | tail -n1)
-            BODY=$(echo "$RESPONSE" | sed '$d')
-
-            if [[ "$CODE" =~ ^2 ]]; then
-              echo "✅ Uploaded: $filepath"
-            else
-              echo "❌ Upload failed ($CODE): $filepath"
-              echo "$BODY" | jq . || echo "$BODY"
-              FAILED=$((FAILED+1))
-            fi
-          done
-
-          [ "$FAILED" -gt 0 ] && exit 1
-          echo "✅ Media sync complete."
