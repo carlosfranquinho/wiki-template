@@ -621,11 +621,10 @@ jobs:
   upload-docs-media:
     name: "Upload Documentation Media"
     runs-on: ubuntu-latest
-    needs: [setup-env]
-    if: always()
+    needs: [setup-env, check-pages-folders]
+    if: needs.check-pages-folders.outputs.has_repo_path == 'false'
     env:
       ASSET_PATH_SAFE: ${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}
-
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -634,7 +633,7 @@ jobs:
         id: detect
         run: |
           set -euo pipefail
-          MEDIA_FILES=$(find documentation -type f ! -name "*.md" 2>/dev/null | sort || true)
+          MEDIA_FILES=$(find documentation -type f ! -name "*.md" 2>/dev/null || true)
           if [ -z "$MEDIA_FILES" ]; then
             echo "No media files found."
             echo "MEDIA_FILES=" >> "$GITHUB_ENV"
@@ -644,70 +643,73 @@ jobs:
             echo "MEDIA_FILES=$(echo "$MEDIA_FILES" | paste -sd ';' -)" >> "$GITHUB_ENV"
           fi
 
-      - name: Ensure base asset folder exists
-        id: create-folder
+      - name: Criar estrutura de pastas no Wiki.js
+        id: criar-pastas
         env:
           WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
         run: |
           set -euo pipefail
 
+          APP_PATH="${ASSET_PATH_SAFE}/documentation"
           BASE_URL="${WIKI_URL%/graphql}"
-          GRAPHQL_URL="${BASE_URL%/}/graphql"
+          GRAPHQL_URL="${BASE_URL}/graphql"
+          UPLOAD_URL="${BASE_URL}/u"
 
           slugify() {
-            echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[[:space:]]+/-/g; s/[^a-z0-9._-]+/-/g; s/-{2,}/-/g; s/^-+|-+$//g'
+            echo "$1" | tr '[:upper:]' '[:lower:]' |
+              sed -E 's/[[:space:]]+/-/g; s/[^a-z0-9._-]+/-/g; s/-{2,}/-/g; s/^-+|-+$//g'
           }
 
-          call_graphql() {
-            local payload="$1"
-            curl -sS -X POST "$GRAPHQL_URL" \
+          get_folder_id() {
+            local parent="$1"; local name="$2"
+            [[ -z "$parent" ]] && parent=0
+            local slug; slug=$(slugify "$name")
+            local q="query { assets { folders(parentFolderId: $parent) { id name slug } } }"
+            local r=$(curl -s -X POST "$GRAPHQL_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -H "Content-Type: application/json" \
-              --data "$payload"
+              --data "$(jq -n --arg q "$q" '{query:$q}')")
+            echo "$r" | jq -r --arg s "$slug" --arg n "$name" \
+              '.data.assets.folders[]? | select((.slug==$s) or ((.name|ascii_downcase)==($n|ascii_downcase))) | .id' | head -n1
           }
 
-          ensure_folder() {
-            local parent_id="$1"
-            local name="$2"
-            [[ -z "$parent_id" ]] && parent_id=0
+          create_folder() {
+            local parent="$1"; local name="$2"
+            [[ -z "$parent" ]] && parent=0
             local slug; slug=$(slugify "$name")
-
-            local query result id
-            query="query { assets { folders(parentFolderId: $parent_id) { id name slug } } }"
-            result=$(call_graphql "$(jq -n --arg q "$query" '{query:$q}')")
-            id=$(echo "$result" | jq -r --arg slug "$slug" --arg name "$name" '
-              .data.assets.folders[]? | select((.slug==$slug) or (.name|ascii_downcase==$name|ascii_downcase)) | .id' | head -n1)
-
-            if [ -n "$id" ] && [ "$id" != "null" ]; then
-              echo "$id"; return
+            local m="mutation { assets { createFolder(parentFolderId: $parent, slug:\"$slug\", name:\"$name\") { responseResult { succeeded message } } } }"
+            local r=$(curl -s -X POST "$GRAPHQL_URL" \
+              -H "Authorization: Bearer $WIKI_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "$(jq -n --arg q "$m" '{query:$q}')")
+            local ok=$(echo "$r" | jq -r '.data.assets.createFolder.responseResult.succeeded')
+            if [ "$ok" != "true" ]; then
+              echo "❌ Falha ao criar pasta '$name'"; echo "$r" | jq .; exit 1
             fi
-
-            local mutation="mutation { assets { createFolder(parentFolderId: $parent_id, slug: \"$slug\", name: \"$name\") { folder { id name slug } responseResult { succeeded message } } } }"
-            result=$(call_graphql "$(jq -n --arg q "$mutation" '{query:$q}')")
-
-            local success id2
-            success=$(echo "$result" | jq -r '.data.assets.createFolder.responseResult.succeeded // "false"')
-            id2=$(echo "$result" | jq -r '.data.assets.createFolder.folder.id // empty')
-
-            if [ "$success" = "true" ] && [ -n "$id2" ]; then
-              echo "$id2"; return
-            fi
-
-            echo "❌ Failed to create folder '$name' (parent $parent_id)" >&2
-            echo "$result" | jq . >&2
-            exit 1
           }
 
-          echo "📂 Ensuring asset folder path: $ASSET_PATH_SAFE/documentation"
-          CURRENT_PARENT=0
-          IFS='/' read -ra PARTS <<< "$ASSET_PATH_SAFE/documentation"
+          echo "📂 Estrutura alvo: $APP_PATH"
+          IFS='/' read -ra PARTS <<< "$APP_PATH"
+          CURRENT_PARENT=""
+
           for PART in "${PARTS[@]}"; do
             [ -z "$PART" ] && continue
-            CURRENT_PARENT=$(ensure_folder "$CURRENT_PARENT" "$PART")
-            echo "✓ Folder '$PART' id=$CURRENT_PARENT"
+            echo "→ Verificar '$PART' sob parent '${CURRENT_PARENT:-0}'"
+            ID=$(get_folder_id "$CURRENT_PARENT" "$PART" | head -n1 || true)
+            if [[ -z "$ID" || "$ID" == "null" ]]; then
+              echo "… não existe, a criar..."
+              create_folder "$CURRENT_PARENT" "$PART"
+              ID=$(get_folder_id "$CURRENT_PARENT" "$PART" | head -n1 || true)
+              [ -z "$ID" ] && { echo "Falha ao obter ID da pasta '$PART'"; exit 1; }
+              echo "✓ Criada: id=$ID"
+            else
+              echo "✓ Já existe: id=$ID"
+            fi
+            CURRENT_PARENT="$ID"
           done
 
           echo "DOC_ROOT_FOLDER_ID=$CURRENT_PARENT" >> "$GITHUB_ENV"
+          echo "UPLOAD_URL=$UPLOAD_URL" >> "$GITHUB_ENV"
 
       - name: Upload Media Files
         if: env.MEDIA_FILES != ''
@@ -715,42 +717,30 @@ jobs:
           WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
         run: |
           set -euo pipefail
-          BASE_URL="${WIKI_URL%/graphql}"
-          UPLOAD_URL="${BASE_URL%/}/u"
-
-          echo "📡 Upload endpoint: $UPLOAD_URL"
-          echo "📦 Root folder id: ${DOC_ROOT_FOLDER_ID}"
-
           FAILED=0
+          echo "📦 Root folder id: ${DOC_ROOT_FOLDER_ID}"
           IFS=';' read -ra FILES <<< "$MEDIA_FILES"
 
           for filepath in "${FILES[@]}"; do
             [ -z "$filepath" ] && continue
             if [ ! -f "$filepath" ]; then
-              echo "⚠️  Missing local file '$filepath'"; continue
+              echo "⚠️ Missing file: $filepath"; continue
             fi
-
-            echo "⬆️  Uploading '$filepath'..."
-            RESPONSE=$(curl -sS -w "\n%{http_code}" -X POST "$UPLOAD_URL" \
+            echo "⬆️ Uploading '$filepath'..."
+            RESP=$(curl -s -w "\n%{http_code}" -X POST "$UPLOAD_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -F "mediaUpload={\"folderId\":${DOC_ROOT_FOLDER_ID}}" \
               -F "mediaUpload=@$filepath")
-
-            HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
-            BODY=$(echo "$RESPONSE" | sed '$d')
-
-            if [[ "$HTTP_STATUS" =~ ^2 ]]; then
+            CODE=$(echo "$RESP" | tail -n1)
+            BODY=$(echo "$RESP" | sed '$d')
+            if [[ "$CODE" =~ ^2 ]]; then
               echo "✅ Uploaded: $filepath"
             else
-              echo "❌ Upload failed ($HTTP_STATUS): $filepath"
+              echo "❌ Upload failed ($CODE): $filepath"
               echo "$BODY" | jq . || echo "$BODY"
               FAILED=$((FAILED+1))
             fi
           done
 
-          if [ "$FAILED" -gt 0 ]; then
-            echo "⚠️  $FAILED uploads failed."
-            exit 1
-          fi
-
+          [ "$FAILED" -gt 0 ] && { echo "⚠️ $FAILED uploads failed"; exit 1; }
           echo "✅ All media uploaded successfully."
