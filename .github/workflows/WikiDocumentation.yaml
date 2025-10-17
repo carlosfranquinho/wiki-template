@@ -487,208 +487,195 @@ jobs:
             echo "✅ No missing documentation files to create."
           fi
 
-  # --- Phase 5: Content Updates ---
-  update-pages:
-    name: "Update Wiki Pages"
-    runs-on: ubuntu-latest
-    needs: [setup-env, check-pages-folders, check-altered-files]
-    if: needs.check-pages-folders.outputs.has_repo_path == 'true'
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+# --- Phase 5: Content Updates ---
+update-pages:
+  name: "Update Wiki Pages"
+  runs-on: ubuntu-latest
+  needs: [setup-env, check-pages-folders, check-altered-files]
+  if: needs.check-pages-folders.outputs.has_repo_path == 'true'
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      - name: Download helper scripts
-        uses: actions/download-artifact@v4
-        with:
-          name: fix_paths_script
-          path: scripts
+    - name: Download helper scripts
+      uses: actions/download-artifact@v4
+      with:
+        name: fix_paths_script
+        path: scripts
 
-      - name: Prepare shared functions
-        run: |
-          set -euo pipefail
-          cat > scripts/wiki_utils.sh <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          source scripts/fix_paths.sh
+    - name: Prepare shared functions
+      run: |
+        set -euo pipefail
+        cat > scripts/wiki_utils.sh <<'EOF'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source scripts/fix_paths.sh
 
-          normalize_markdown_links() {
-            sed -E \
-              -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
-              -e 's#\]\([[:space:]]*documentation/#](./documentation/#g' \
-              -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md([?#][^)]*)\)#](./documentation/\1\2)#g' \
-              -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
-          }
+        normalize_markdown_links() {
+          sed -E \
+            -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
+            -e 's#\]\([[:space:]]*documentation/#](./documentation/#g' \
+            -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md([?#][^)]*)\)#](./documentation/\1\2)#g' \
+            -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
+        }
 
-          get_page_id() {
-            local rel_path="$1"
-            local target="${rel_path#/}"  # remove / inicial se existir
+        get_page_id() {
+          local rel_path="$1"
+          local target="${rel_path#/}"
 
-            local repo_slug
-            repo_slug=$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null \
-                        | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')
+          local repo_slug
+          repo_slug=$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null \
+                      | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')
 
-            local repo_prefix="${BASE_PATH}/${repo_slug}"
-            repo_prefix="${repo_prefix//\/\//\/}"
+          local repo_prefix="${BASE_PATH}/${repo_slug}"
+          repo_prefix="${repo_prefix//\/\//\/}"
 
-            local QUERY='query ($locale: String!) {
-              pages { list(locale: $locale) { id title path } }
-            }'
+          local QUERY='query ($locale: String!) {
+            pages { list(locale: $locale) { id title path } }
+          }'
 
-            local PAYLOAD
-            PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" '{query:$q,variables:{locale:$loc}}')
+          local PAYLOAD
+          PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" '{query:$q,variables:{locale:$loc}}')
 
-            local RESULT
-            RESULT=$(curl -sS -X POST "$WIKI_URL" \
-              -H "Authorization: Bearer $WIKI_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data "$PAYLOAD")
+          local RESULT
+          RESULT=$(curl -sS -X POST "$WIKI_URL" \
+            -H "Authorization: Bearer $WIKI_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$PAYLOAD")
 
-            echo "🔎 get_page_id: repo_prefix='${repo_prefix}' target='${target}'" >&2
+          echo "$RESULT" | jq -r \
+            --arg prefix "$repo_prefix" --arg target "$target" '
+              .data.pages.list[]?
+              | select(.path | startswith($prefix))
+              | select(
+                  (.path | ascii_downcase | gsub("ç";"c") | gsub("Ç";"c")) ==
+                  ($target | ascii_downcase | gsub("ç";"c") | gsub("Ç";"c"))
+                )
+              | .id
+            ' | head -n 1
+        }
 
-            # Comparação sem barra inicial, sem acentos e sem distinção de maiúsculas
-            echo "$RESULT" | jq -r \
-              --arg prefix "$repo_prefix" --arg target "$target" '
-                .data.pages.list[]?
-                | select(.path | startswith($prefix))
-                | select(
-                    (.path | ascii_downcase | gsub("ç";"c") | gsub("Ç";"c")) ==
-                    ($target | ascii_downcase | gsub("ç";"c") | gsub("Ç";"c"))
-                  )
-                | .id
-              ' | head -n 1
-          }
+        update_wiki_page() {
+          local id="$1"
+          local content_file="$2"
+          local title="$3"
 
+          local CONTENT
+          CONTENT=$(tr -d '\r' < "$content_file")
 
-          update_wiki_page() {
-            local id="$1"
-            local content_file="$2"
-            local title="$3"
+          local QUERY='mutation ($id: Int!, $content: String!, $locale: String!) {
+            pages {
+              update(
+                id: $id,
+                content: $content,
+                editor: "markdown",
+                isPrivate: false,
+                isPublished: true,
+                locale: $locale,
+                tags: []
+              ) {
+                responseResult { succeeded message }
+                page { id path updatedAt }
+              }
+            }
+          }'
 
-            echo "🔄 Updating page ID $id ($title)..."
+          local JSON_PAYLOAD
+          JSON_PAYLOAD=$(jq -n \
+            --arg q "$QUERY" \
+            --arg id "$id" \
+            --arg content "$CONTENT" \
+            --arg loc "$WIKI_LOCALE" \
+            '{query: $q, variables: {id: ($id | tonumber), content: $content, locale: $loc}}'
+          )
+
+          local RESULT
+          RESULT=$(curl -s -X POST "$WIKI_URL" \
+            -H "Authorization: Bearer $WIKI_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$JSON_PAYLOAD")
+
+          local OK
+          OK=$(echo "$RESULT" | jq -r '.data.pages.update.responseResult.succeeded // empty')
+
+          if [ "$OK" = "true" ]; then
+            echo "✅ $title updated (ID $id)"
+          else
+            echo "⚠️  Failed to update $title (ID $id)"
+            echo "$RESULT" | jq .errors
+            exit 1
+          fi
+        }
+        EOF
+        chmod +x scripts/wiki_utils.sh
+
+    - name: Update changed pages
+      run: |
+        set -euo pipefail
+        source scripts/wiki_utils.sh
+
+        REPO_SLUG=$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')
+        REPO_PATH="${BASE_PATH}/${REPO_SLUG}"
+
+        RAW_MISSING="${{ needs.check-pages-folders.outputs.missing_files }}"
+        IFS=' ' read -r -a MISSING_FILES <<< "$(echo "$RAW_MISSING" | tr -s ' ')"
+
+        RAW_CHANGED="${{ needs.check-altered-files.outputs.DOC_FILES_CHANGED }}"
+        IFS=' ' read -r -a CHANGED_DOCS <<< "$(echo "$RAW_CHANGED" | tr -s ' ')"
+
+        DOCS_CHANGED="${{ needs.check-altered-files.outputs.DOCS_CHANGED }}"
+        README_CHANGED="${{ needs.check-altered-files.outputs.README_CHANGED }}"
+        CHANGELOG_CHANGED="${{ needs.check-altered-files.outputs.CHANGELOG_CHANGED }}"
+
+        update_if_changed() {
+          local file="$1"
+          local title="$2"
+          local subpath="$3"
+          local changed="$4"
+
+          if [ "$changed" = "true" ] && [ -f "$file" ]; then
+            local path="${REPO_PATH}/${subpath}"
+
+            for MISS in "${MISSING_FILES[@]}"; do
+              [[ "$MISS" == *"${subpath}"* ]] && return
+            done
+
+            PAGE_ID=$(get_page_id "$path")
+            [ -z "$PAGE_ID" ] && return
 
             local CONTENT
-            CONTENT=$(tr -d '\r' < "$content_file")
-
-            local QUERY='mutation ($id: Int!, $content: String!, $locale: String!) {
-              pages {
-                update(
-                  id: $id,
-                  content: $content,
-                  editor: "markdown",
-                  isPrivate: false,
-                  isPublished: true,
-                  locale: $locale,
-                  tags: []
-                ) {
-                  responseResult { succeeded message }
-                  page { id path updatedAt }
-                }
-              }
-            }'
-
-            local JSON_PAYLOAD
-            JSON_PAYLOAD=$(jq -n \
-              --arg q "$QUERY" \
-              --arg id "$id" \
-              --arg content "$CONTENT" \
-              --arg loc "$WIKI_LOCALE" \
-              '{query: $q, variables: {id: ($id | tonumber), content: $content, locale: $loc}}'
-            )
-
-            local RESULT
-            RESULT=$(curl -s -X POST "$WIKI_URL" \
-              -H "Authorization: Bearer $WIKI_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data "$JSON_PAYLOAD")
-
-            local OK
-            OK=$(echo "$RESULT" | jq -r '.data.pages.update.responseResult.succeeded // empty')
-
-            if [ "$OK" = "true" ]; then
-              local TS
-              TS=$(echo "$RESULT" | jq -r '.data.pages.update.page.updatedAt')
-              echo "✅ Updated $title successfully at $TS"
-            else
-              echo "⚠️ Failed to update $title"
-              echo "$RESULT" | jq .
-              exit 1
-            fi
-          }
-          EOF
-          chmod +x scripts/wiki_utils.sh
-
-      - name: Update changed pages
-        run: |
-          set -euo pipefail
-          source scripts/wiki_utils.sh
-
-          REPO_SLUG=$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')
-          REPO_PATH="${BASE_PATH}/${REPO_SLUG}"
-          echo "📂 Repository path: $REPO_PATH"
-
-          ASSET_PATH_SAFE="${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}"
-          export ASSET_PATH_SAFE
-
-          RAW_MISSING="${{ needs.check-pages-folders.outputs.missing_files }}"
-          IFS=' ' read -r -a MISSING_FILES <<< "$(echo "$RAW_MISSING" | tr -s ' ')"
-          echo "🧩 Missing files: ${MISSING_FILES[*]}"
-
-          RAW_CHANGED="${{ needs.check-altered-files.outputs.DOC_FILES_CHANGED }}"
-          IFS=' ' read -r -a CHANGED_DOCS <<< "$(echo "$RAW_CHANGED" | tr -s ' ')"
-
-          DOCS_CHANGED="${{ needs.check-altered-files.outputs.DOCS_CHANGED }}"
-          README_CHANGED="${{ needs.check-altered-files.outputs.README_CHANGED }}"
-          CHANGELOG_CHANGED="${{ needs.check-altered-files.outputs.CHANGELOG_CHANGED }}"
-
-          update_if_changed() {
-            local file="$1"
-            local title="$2"
-            local subpath="$3"
-            local changed="$4"
-
-            if [ "$changed" = "true" ] && [ -f "$file" ]; then
-              local path="${REPO_PATH}/${subpath}"
-
-              for MISS in "${MISSING_FILES[@]}"; do
-                [[ "$MISS" == *"${subpath}"* ]] && echo "⚠️ Skipping $subpath (still missing)" && return
-              done
-
-              echo "🔍 Checking page at $path"
-              PAGE_ID=$(get_page_id "$path")
-              [ -z "$PAGE_ID" ] && echo "⚠️ No page found for $path" && return
-
-              echo "🆔 Page ID: $PAGE_ID"
-              CONTENT=$(tr -d '\r' < "$file" | fix_image_paths | normalize_markdown_links)
-              SHORT_SHA="${GITHUB_SHA:-unknown}"
-              CONTENT=$(printf '%s\n\n<!-- synced:%s -->\n' "$CONTENT" "${SHORT_SHA:0:7}")
-              CONTENT_FILE="$(mktemp)"
-              printf '%s' "$CONTENT" > "$CONTENT_FILE"
-              update_wiki_page "$PAGE_ID" "$CONTENT_FILE" "$title"
-            fi
-          }
-
-          update_if_changed "README.md" "README" "readme" "$README_CHANGED"
-          update_if_changed "CHANGELOG.md" "CHANGELOG" "changelog" "$CHANGELOG_CHANGED"
-
-          if [ "$DOCS_CHANGED" = "true" ]; then
-            echo "📄 Documentation files to update: ${CHANGED_DOCS[*]}"
-            for FILE in "${CHANGED_DOCS[@]}"; do
-              [ -z "$FILE" ] && continue
-              DOC_TITLE=$(basename "$FILE" .md)
-              DOC_PATH="${REPO_PATH}/documentation/${DOC_TITLE}"
-              PAGE_ID=$(get_page_id "$DOC_PATH")
-              [ -z "$PAGE_ID" ] && echo "⚠️ Skipping: no Wiki page for ${DOC_TITLE}" && continue
-              CONTENT=$(tr -d '\r' < "documentation/${DOC_TITLE}.md" | fix_image_paths | normalize_markdown_links)
-              SHORT_SHA="${GITHUB_SHA:-unknown}"
-              CONTENT=$(printf '%s\n\n<!-- synced:%s -->\n' "$CONTENT" "${SHORT_SHA:0:7}")
-              CONTENT_FILE="$(mktemp)"
-              printf '%s' "$CONTENT" > "$CONTENT_FILE"
-              update_wiki_page "$PAGE_ID" "$CONTENT_FILE" "$DOC_TITLE"
-            done
-          else
-            echo "ℹ️ No documentation files changed."
+            CONTENT=$(tr -d '\r' < "$file" | fix_image_paths | normalize_markdown_links)
+            SHORT_SHA="${GITHUB_SHA:-unknown}"
+            CONTENT=$(printf '%s\n\n<!-- synced:%s -->\n' "$CONTENT" "${SHORT_SHA:0:7}")
+            local CONTENT_FILE
+            CONTENT_FILE="$(mktemp)"
+            printf '%s' "$CONTENT" > "$CONTENT_FILE"
+            update_wiki_page "$PAGE_ID" "$CONTENT_FILE" "$title"
           fi
+        }
 
+        update_if_changed "README.md" "README" "readme" "$README_CHANGED"
+        update_if_changed "CHANGELOG.md" "CHANGELOG" "changelog" "$CHANGELOG_CHANGED"
+
+        if [ "$DOCS_CHANGED" = "true" ]; then
+          for FILE in "${CHANGED_DOCS[@]}"; do
+            [ -z "$FILE" ] && continue
+            DOC_TITLE=$(basename "$FILE" .md)
+            DOC_PATH="${REPO_PATH}/documentation/${DOC_TITLE}"
+            PAGE_ID=$(get_page_id "$DOC_PATH")
+            [ -z "$PAGE_ID" ] && continue
+            local CONTENT
+            CONTENT=$(tr -d '\r' < "documentation/${DOC_TITLE}.md" | fix_image_paths | normalize_markdown_links)
+            SHORT_SHA="${GITHUB_SHA:-unknown}"
+            CONTENT=$(printf '%s\n\n<!-- synced:%s -->\n' "$CONTENT" "${SHORT_SHA:0:7}")
+            local CONTENT_FILE
+            CONTENT_FILE="$(mktemp)"
+            printf '%s' "$CONTENT" > "$CONTENT_FILE"
+            update_wiki_page "$PAGE_ID" "$CONTENT_FILE" "$DOC_TITLE"
+          done
+        else
+          echo "ℹ️ No documentation files changed."
+        fi
 
   # --- Phase 6: Asset Upload ---
   upload-docs-media:
