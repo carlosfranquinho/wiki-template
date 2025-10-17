@@ -533,6 +533,7 @@ jobs:
             local QUERY='query ($locale: String!) {
               pages { list(locale: $locale) { id path } }
             }'
+
             local PAYLOAD
             PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" '{query:$q,variables:{locale:$loc}}')
 
@@ -542,18 +543,24 @@ jobs:
               -H "Content-Type: application/json" \
               --data "$PAYLOAD")
 
-            # debug vai para stderr (não interfere com PAGE_ID)
             echo "🔎 get_page_id: repo_prefix='${repo_prefix}' target='${target}'" >&2
-            echo "$RESULT" | jq -r --arg prefix "$repo_prefix" '
-              .data.pages.list[]? | select(.path | startswith($prefix)) | .path
-            ' | head -n 10 | sed 's/^/[paths]/' >&2
 
-            # devolve só o ID limpo
+            # Debug: mostra as páginas encontradas dentro do prefixo
+            echo "$RESULT" | jq -r --arg prefix "$repo_prefix" '
+              .data.pages.list[]?
+              | select(.path | startswith($prefix))
+              | [.id, .path] | @tsv
+            ' | sed 's/^/[paths]/' >&2
+
+            # Comparação robusta (ignora case e "ç"/"c")
             echo "$RESULT" | jq -r \
               --arg prefix "$repo_prefix" --arg target "$target" '
                 .data.pages.list[]?
                 | select(.path | startswith($prefix))
-                | select((.path | gsub("ç";"c") | gsub("Ç";"C")) == ($target | gsub("ç";"c") | gsub("Ç";"C")))
+                | select(
+                    ((.path | ascii_downcase | gsub("ç";"c") | gsub("Ç";"c")) ==
+                    ($target | ascii_downcase | gsub("ç";"c") | gsub("Ç";"c")))
+                  )
                 | .id
               ' | head -n 1
           }
