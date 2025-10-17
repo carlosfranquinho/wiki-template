@@ -345,27 +345,27 @@ jobs:
               -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
           }
 
+          # === Resolve ID por caminho EXATO dentro de BASE_PATH/REPO_SLUG ===
           get_page_id() {
-            local rel_path="$1"       # Ex: Pedro/Aplicações/App-One/readme
-            local base="$BASE_PATH"   # Ex: Pedro/Aplicações
-            local repo="$REPO_NAME"   # Ex: App One
+            local rel_path="$1"     # ex: Pedro/Aplicações/App-One/readme (sem barra inicial)
+            # normaliza para começar com uma única barra
+            local target="/${rel_path#/}"
 
-            # Cria slug seguro do nome do repositório (sem acentos, espaços → hifens)
+            # slug do repo (mesmo algoritmo usado no resto do pipeline)
             local repo_slug
-            repo_slug=$(echo "$repo" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | \
-                        sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')
+            repo_slug=$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null \
+                        | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')
 
-            # Caminho completo do repositório na wiki (prefixo obrigatório)
-            local repo_prefix="${base}/${repo_slug}"   # Ex: Pedro/Aplicações/App-One
+            # prefixo obrigatório do repo
+            local repo_prefix="/${BASE_PATH}/${repo_slug}"
+            repo_prefix="${repo_prefix//\/\//\/}"   # compacta //
 
-            # Query GraphQL para listar páginas
+            # Query simples
             local QUERY='query ($locale: String!) {
               pages { list(locale: $locale) { id path } }
             }'
-
             local PAYLOAD
-            PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" \
-                      '{query:$q,variables:{locale:$loc}}')
+            PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" '{query:$q,variables:{locale:$loc}}')
 
             local RESULT
             RESULT=$(curl -sS -X POST "$WIKI_URL" \
@@ -373,9 +373,15 @@ jobs:
               -H "Content-Type: application/json" \
               --data "$PAYLOAD")
 
-            # Filtra apenas páginas dentro do repositório atual e com caminho exato
+            # DEBUG curto: mostra 5 paths sob o prefixo do repo
+            echo "🔎 get_page_id: repo_prefix='${repo_prefix}' target='${target}'" 1>&2
+            echo "$RESULT" | jq -r --arg prefix "$repo_prefix" '
+              .data.pages.list[]? | select(.path | startswith($prefix)) | .path
+            ' | head -n 5 | sed 's/^/[paths]/' 1>&2
+
+            # Seleção EXATA: começa pelo prefixo do repo E é exatamente o target
             echo "$RESULT" | jq -r \
-              --arg prefix "/${repo_prefix}" --arg target "/${rel_path}" '
+              --arg prefix "$repo_prefix" --arg target "$target" '
                 .data.pages.list[]?
                 | select(.path | startswith($prefix))
                 | select(.path == $target)
@@ -383,44 +389,26 @@ jobs:
               ' | head -n 1
           }
 
+          # === Update minimalista (só content), comprovado que a API aceita universalmente ===
           update_wiki_page() {
             local id="$1"
             local content_file="$2"
             local title="$3"
 
-            local QUERY_READ='query ($id:Int!){
-              pages { single(id:$id){
-                id title path description editor tags { tag } isPrivate isPublished
-              }}
-            }'
+            local CONTENT
+            CONTENT=$(tr -d '\r' < "$content_file")
 
-            local READ_PAYLOAD
-            READ_PAYLOAD=$(jq -n --arg q "$QUERY_READ" --argjson id "$id" '{query:$q, variables:{id:$id}}')
-
-            local PAGE
-            PAGE=$(curl -sS -X POST "$WIKI_URL" \
-              -H "Authorization: Bearer $WIKI_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data "$READ_PAYLOAD")
-
-            local PATH_ DESC_ EDITOR_ PRIV_ PUB_ TAGS_
-            PATH_=$(echo "$PAGE" | jq -r '.data.pages.single.path // ""')
-            DESC_=$(echo "$PAGE" | jq -r '.data.pages.single.description // ""')
-            EDITOR_=$(echo "$PAGE" | jq -r '.data.pages.single.editor // "markdown"')
-            PRIV_=$(echo "$PAGE" | jq -r '.data.pages.single.isPrivate // false')
-            PUB_=$(echo "$PAGE" | jq -r '.data.pages.single.isPublished // true')
-            TAGS_=$(echo "$PAGE" | jq -c '[.data.pages.single.tags[].tag] // []')
-
-            local QUERY='mutation Update(
-              $id:Int!, $path:String!, $title:String!, $desc:String!,
-              $editor:String!, $content:String!, $priv:Boolean!, $pub:Boolean!, $tags:[String!]
-            ){
+            local QUERY='mutation ($id: Int!, $content: String!, $locale: String!) {
               pages {
                 update(
-                  id:$id, path:$path, title:$title, description:$desc,
-                  editor:$editor, isPrivate:$priv, isPublished:$pub,
-                  tags:$tags, content:$content
-                ){
+                  id: $id,
+                  content: $content,
+                  editor: "markdown",
+                  isPrivate: false,
+                  isPublished: true,
+                  locale: $locale,
+                  tags: []
+                ) {
                   responseResult { succeeded message }
                   page { id path updatedAt }
                 }
@@ -430,21 +418,10 @@ jobs:
             local PAYLOAD
             PAYLOAD=$(jq -n \
               --arg q "$QUERY" \
-              --argjson id "$id" \
-              --arg path "$PATH_" \
-              --arg title "$title" \
-              --arg desc "$DESC_" \
-              --arg editor "$EDITOR_" \
-              --argjson priv "$PRIV_" \
-              --argjson pub "$PUB_" \
-              --argjson tags "$TAGS_" \
-              --rawfile content "$content_file" \
-              '{ query: $q, variables: {
-                  id: $id, path: $path, title: $title,
-                  desc: $desc, editor: $editor,
-                  priv: $priv, pub: $pub,
-                  tags: $tags, content: $content
-                } }')
+              --arg id "$id" \
+              --arg content "$CONTENT" \
+              --arg loc "$WIKI_LOCALE" \
+              '{query:$q, variables:{ id: ($id|tonumber), content:$content, locale:$loc }}')
 
             local RESULT
             RESULT=$(curl -sS -X POST "$WIKI_URL" \
@@ -454,7 +431,6 @@ jobs:
 
             local OK
             OK=$(echo "$RESULT" | jq -r '.data.pages.update.responseResult.succeeded // empty')
-
             if [ "$OK" = "true" ]; then
               local TS
               TS=$(echo "$RESULT" | jq -r '.data.pages.update.page.updatedAt')
