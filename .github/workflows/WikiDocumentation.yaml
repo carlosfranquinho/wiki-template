@@ -452,7 +452,7 @@ jobs:
               -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
           }
 
-          # Get page ID scoped to current repo
+          # Get page ID scoped to current repo (with tag filter)
           get_page_id() {
             local rel_path="$1"
             local target="${rel_path#/}"
@@ -504,6 +504,7 @@ jobs:
               pages {
                 update(
                   id: $id,
+                  description: "",
                   content: $content,
                   editor: "markdown",
                   isPrivate: false,
@@ -512,7 +513,7 @@ jobs:
                   tags: ["gh-sync"]
                 ) {
                   responseResult { succeeded message }
-                  page { id path updatedAt }
+                  page { id path updatedAt tags { title } }
                 }
               }
             }'
