@@ -35,7 +35,6 @@ env:
   WIKI_LOCALE: "en"
   BASE_PATH: ${{ inputs.base_path }}
   REPO_NAME: ${{ inputs.app_name != '' && inputs.app_name || github.event.repository.name }}
-  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
 
 jobs:
   # --- Phase 1: Setup ---
@@ -168,9 +167,12 @@ jobs:
           RESULT=$(curl -sS -X POST "$WIKI_URL" \
             -H "Authorization: Bearer $WIKI_API_TOKEN" \
             -H "Content-Type: application/json" \
-            --data "$JSON_PAYLOAD")
-          
-          echo "$RESULT" | jq .
+            --data "$JSON_PAYLOAD" \
+            | jq --arg prefix "$BASE_PATH" '{data:{pages:{list:[.data.pages.list[] | select(.path | startswith($prefix))]}}}')
+
+          echo "Filtered Wiki pages under base path '$BASE_PATH':"
+          echo "$RESULT" | jq -r '.data.pages.list[].path'
+
 
           # Verrificar se Existem erros no resultado
           ERR_CNT=$(echo "$RESULT" | jq '.errors | length // 0')
