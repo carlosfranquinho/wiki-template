@@ -634,21 +634,26 @@ jobs:
         id: detect
         run: |
           set -euo pipefail
-          RAW_CHANGED="${{ needs.check-altered-files.outputs.ALL_CHANGED_FILES }}"
-          echo "Raw changed files:"
-          echo "$RAW_CHANGED"
 
-          # Apenas ficheiros não Markdown em /documentation/
-          CHANGED_MEDIA=$(echo "$RAW_CHANGED" | tr ' ' '\n' | grep '^documentation/' | grep -v '\.md$' || true)
+          echo "🔍 Detecting new or modified media files in documentation/"
+          git fetch --depth=2 origin main >/dev/null 2>&1 || true
+
+          # Determina o commit base (último em main, ou o anterior no histórico local)
+          BASE_REF=$(git rev-parse origin/main 2>/dev/null || git rev-parse HEAD~1)
+          echo "Comparing against base: $BASE_REF"
+
+          # Lista de ficheiros alterados ou adicionados (exclui .md)
+          CHANGED_MEDIA=$(git diff --name-only "$BASE_REF" HEAD -- 'documentation/' | grep -v '\.md$' || true)
 
           if [ -z "$CHANGED_MEDIA" ]; then
-            echo "No new or modified media files detected."
+            echo "ℹ️  No new or modified media files detected."
             echo "MEDIA_FILES=" >> "$GITHUB_ENV"
           else
             echo "📸 Media files to upload/update:"
             echo "$CHANGED_MEDIA"
             echo "MEDIA_FILES=$(echo "$CHANGED_MEDIA" | paste -sd ';' -)" >> "$GITHUB_ENV"
           fi
+
 
       - name: Ensure asset folders exist
         if: env.MEDIA_FILES != ''
