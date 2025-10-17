@@ -520,14 +520,20 @@ jobs:
           }
 
           get_page_id() {
-            local path="$1"
-            local seg
-            seg=$(basename "$path")
+            local rel_path="$1"
+            local target="/${rel_path#/}"
+
+            # Normaliza também BASE_PATH e REPO_NAME para garantir correspondência exata
+            local repo_slug
+            repo_slug=$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null \
+                        | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')
+
+            local repo_prefix="/${BASE_PATH}/${repo_slug}"
+            repo_prefix="${repo_prefix//\/\//\/}"
 
             local QUERY='query ($locale: String!) {
-              pages { list(locale: $locale) { id title path } }
+              pages { list(locale: $locale) { id path } }
             }'
-
             local PAYLOAD
             PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" '{query:$q,variables:{locale:$loc}}')
 
@@ -537,17 +543,20 @@ jobs:
               -H "Content-Type: application/json" \
               --data "$PAYLOAD")
 
+            echo "🔎 get_page_id: repo_prefix='${repo_prefix}' target='${target}'"
+            echo "$RESULT" | jq -r --arg prefix "$repo_prefix" '
+              .data.pages.list[]? | select(.path | startswith($prefix)) | .path
+            ' | head -n 10 | sed 's/^/[paths]/'
+
             echo "$RESULT" | jq -r \
-              --arg base "$BASE_PATH" --arg seg "$seg" '
+              --arg prefix "$repo_prefix" --arg target "$target" '
                 .data.pages.list[]?
-                | select(.path | startswith($base))
-                | select(
-                    (.path | ascii_downcase | gsub("[^a-z0-9/_-]"; "")) 
-                    | endswith(($seg | ascii_downcase | gsub("[^a-z0-9/_-]"; "")))
-                  )
+                | select(.path | startswith($prefix))
+                | select((.path | gsub("ç";"c") | gsub("Ç";"C")) == ($target | gsub("ç";"c") | gsub("Ç";"C")))
                 | .id
               ' | head -n 1
           }
+
 
           update_wiki_page() {
             local id="$1"
