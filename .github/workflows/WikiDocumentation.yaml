@@ -339,7 +339,7 @@ jobs:
                   tags: ["gh-sync"]
                 ) {
                   responseResult { succeeded message }
-                  page { id path title tags }
+                  page { id path title tags { title } }
                 }
               }
             }'
