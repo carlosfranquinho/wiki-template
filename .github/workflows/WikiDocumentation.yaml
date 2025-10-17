@@ -336,10 +336,10 @@ jobs:
                   isPrivate: false,
                   isPublished: true,
                   locale: $locale,
-                  tags: { set: [{ title: "gh-sync" }] }
+                  tags: ["gh-sync"]
                 ) {
                   responseResult { succeeded message }
-                  page { id path title tags { title } }
+                  page { id path title tags }
                 }
               }
             }'
@@ -416,6 +416,7 @@ jobs:
           else
             echo "✅ No missing documentation files to create."
           fi
+
 
   # --- Phase 5: Content Updates ---
   update-pages:
