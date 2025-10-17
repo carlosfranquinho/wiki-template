@@ -330,15 +330,16 @@ jobs:
                 create(
                   path: $path,
                   title: $title,
+                  description: "",
                   content: $content,
                   editor: "markdown",
                   isPrivate: false,
                   isPublished: true,
                   locale: $locale,
-                  tags: ["gh-sync"]
+                  tags: { set: [{ title: "gh-sync" }] }
                 ) {
                   responseResult { succeeded message }
-                  page { id path title tags }
+                  page { id path title tags { title } }
                 }
               }
             }'
