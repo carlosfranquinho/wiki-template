@@ -667,29 +667,37 @@ jobs:
           }
 
           ensure_folder() {
-            local parent="$1"
+            local parent_id="$1"
             local name="$2"
+            [[ -z "$parent_id" ]] && parent_id=0
             local slug; slug=$(slugify "$name")
 
             local query result id
-            query="query { assets { folders(parentFolderId: $parent) { id name slug } } }"
+            query="query { assets { folders(parentFolderId: $parent_id) { id name slug } } }"
             result=$(call_graphql "$(jq -n --arg q "$query" '{query:$q}')")
-            id=$(echo "$result" | jq -r --arg slug "$slug" --arg name "$name" '.data.assets.folders[]? | select((.slug==$slug) or (.name|ascii_downcase==$name|ascii_downcase)) | .id' | head -n1)
+            id=$(echo "$result" | jq -r --arg slug "$slug" --arg name "$name" '
+              .data.assets.folders[]? | select((.slug==$slug) or (.name|ascii_downcase==$name|ascii_downcase)) | .id' | head -n1)
 
             if [ -n "$id" ] && [ "$id" != "null" ]; then
               echo "$id"; return
             fi
 
-            local mutation="mutation { assets { createFolder(parentFolderId: $parent, slug: \"$slug\", name: \"$name\") { folder { id } } } }"
+            local mutation="mutation { assets { createFolder(parentFolderId: $parent_id, slug: \"$slug\", name: \"$name\") { folder { id name slug } responseResult { succeeded message } } } }"
             result=$(call_graphql "$(jq -n --arg q "$mutation" '{query:$q}')")
-            id=$(echo "$result" | jq -r '.data.assets.createFolder.folder.id')
-            if [ -z "$id" ] || [ "$id" = "null" ]; then
-              echo "❌ Failed to create folder '$name' (parent $parent)" >&2; exit 1
+
+            local success id2
+            success=$(echo "$result" | jq -r '.data.assets.createFolder.responseResult.succeeded // "false"')
+            id2=$(echo "$result" | jq -r '.data.assets.createFolder.folder.id // empty')
+
+            if [ "$success" = "true" ] && [ -n "$id2" ]; then
+              echo "$id2"; return
             fi
-            echo "$id"
+
+            echo "❌ Failed to create folder '$name' (parent $parent_id)" >&2
+            echo "$result" | jq . >&2
+            exit 1
           }
 
-          # criar hierarquia base pedro/aplicacoes/app/documentation
           echo "📂 Ensuring asset folder path: $ASSET_PATH_SAFE/documentation"
           CURRENT_PARENT=0
           IFS='/' read -ra PARTS <<< "$ASSET_PATH_SAFE/documentation"
@@ -746,4 +754,3 @@ jobs:
           fi
 
           echo "✅ All media uploaded successfully."
-
