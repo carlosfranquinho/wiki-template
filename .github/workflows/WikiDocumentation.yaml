@@ -534,31 +534,24 @@ jobs:
 
           get_page_id() {
             local path="$1"
-            local seg=$(basename "$path")
+            local seg
+            seg=$(basename "$path")
 
             local QUERY='query ($locale: String!) {
-              pages {
-                list(locale: $locale) { id title path }
-              }
+              pages { list(locale: $locale) { id title path } }
             }'
 
-            local PAYLOAD=$(jq -n \
-              --arg q "$QUERY" \
-              --arg loc "$WIKI_LOCALE" \
-              '{ query: $q, variables: { locale: $loc } }')
+            local PAYLOAD
+            PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" '{query:$q,variables:{locale:$loc}}')
 
-            echo "🧾 Payload preview:"
-            echo "$PAYLOAD" | jq -r '.variables.content' | head -n 20
-            echo "--- end content preview ---
-            
-            local RESULT=$(curl -sS -X POST "$WIKI_URL" \
+            local RESULT
+            RESULT=$(curl -sS -X POST "$WIKI_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data "$PAYLOAD")
 
             echo "$RESULT" | jq -r \
-              --arg base "$BASE_PATH" \
-              --arg seg "$seg" '
+              --arg base "$BASE_PATH" --arg seg "$seg" '
                 .data.pages.list[]?
                 | select(.path | startswith($base))
                 | select(
@@ -574,77 +567,42 @@ jobs:
             local content_file="$2"
             local title="$3"
 
-            local QUERY_READ='query ($id:Int!){
-              pages { single(id:$id){
-                id title path description editor tags { tag } isPrivate isPublished
-              }}
-            }'
+            echo "🔄 Updating page ID $id ($title)..."
 
-            local READ_PAYLOAD
-            READ_PAYLOAD=$(jq -n --arg q "$QUERY_READ" --argjson id "$id" '{query:$q, variables:{id:$id}}')
+            local CONTENT
+            CONTENT=$(tr -d '\r' < "$content_file")
 
-            echo "🧾 Payload preview:"
-            echo "$PAYLOAD" | jq -r '.variables.content' | head -n 20
-            echo "--- end content preview ---
-
-            local PAGE
-            PAGE=$(curl -sS -X POST "$WIKI_URL" \
-              -H "Authorization: Bearer $WIKI_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data "$READ_PAYLOAD")
-
-            local PATH_ DESC_ EDITOR_ PRIV_ PUB_ TAGS_
-            PATH_=$(echo "$PAGE" | jq -r '.data.pages.single.path // ""')
-            DESC_=$(echo "$PAGE" | jq -r '.data.pages.single.description // ""')
-            EDITOR_=$(echo "$PAGE" | jq -r '.data.pages.single.editor // "markdown"')
-            PRIV_=$(echo "$PAGE" | jq -r '.data.pages.single.isPrivate // false')
-            PUB_=$(echo "$PAGE" | jq -r '.data.pages.single.isPublished // true')
-            TAGS_=$(echo "$PAGE" | jq -c '[.data.pages.single.tags[].tag] // []')
-
-            local QUERY='mutation Update(
-              $id:Int!, $path:String!, $title:String!, $desc:String!,
-              $editor:String!, $content:String!, $priv:Boolean!, $pub:Boolean!, $tags:[String!]
-            ){
+            local QUERY='mutation ($id: Int!, $content: String!, $locale: String!) {
               pages {
                 update(
-                  id:$id, path:$path, title:$title, description:$desc,
-                  editor:$editor, isPrivate:$priv, isPublished:$pub,
-                  tags:$tags, content:$content
-                ){
+                  id: $id,
+                  content: $content,
+                  editor: "markdown",
+                  isPrivate: false,
+                  isPublished: true,
+                  locale: $locale,
+                  tags: []
+                ) {
                   responseResult { succeeded message }
                   page { id path updatedAt }
                 }
               }
             }'
 
-            local PAYLOAD
-            PAYLOAD=$(jq -n \
+            local JSON_PAYLOAD
+            JSON_PAYLOAD=$(jq -n \
               --arg q "$QUERY" \
-              --argjson id "$id" \
-              --arg path "$PATH_" \
-              --arg title "$title" \
-              --arg desc "$DESC_" \
-              --arg editor "$EDITOR_" \
-              --argjson priv "$PRIV_" \
-              --argjson pub "$PUB_" \
-              --argjson tags "$TAGS_" \
-              --rawfile content "$content_file" \
-              '{ query: $q, variables: {
-                  id: $id, path: $path, title: $title,
-                  desc: $desc, editor: $editor,
-                  priv: $priv, pub: $pub,
-                  tags: $tags, content: $content
-                } }')
-
-            echo "🧾 Payload preview:"
-            echo "$PAYLOAD" | jq -r '.variables.content' | head -n 20
-            echo "--- end content preview ---
+              --arg id "$id" \
+              --arg content "$CONTENT" \
+              --arg loc "$WIKI_LOCALE" \
+              '{query: $q, variables: {id: ($id | tonumber), content: $content, locale: $loc}}'
+            )
 
             local RESULT
-            RESULT=$(curl -sS -X POST "$WIKI_URL" \
+            RESULT=$(curl -s -X POST "$WIKI_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -H "Content-Type: application/json" \
-              --data "$PAYLOAD")
+              --data "$JSON_PAYLOAD")
 
             local OK
             OK=$(echo "$RESULT" | jq -r '.data.pages.update.responseResult.succeeded // empty')
