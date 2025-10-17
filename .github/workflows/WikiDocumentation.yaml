@@ -617,39 +617,45 @@ jobs:
           fi
 
 
-  # --- Phase 6: Asset Upload ---
+  # --- Phase 6: Asset Upload (always incremental) ---
   upload-docs-media:
-    name: "Upload Documentation Media"
+    name: "Upload or Update Documentation Media"
     runs-on: ubuntu-latest
-    needs: [setup-env, check-pages-folders]
-    if: needs.check-pages-folders.outputs.has_repo_path == 'false'
+    needs: [setup-env, check-pages-folders, check-altered-files]
+    if: always()
     env:
       ASSET_PATH_SAFE: ${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}
+
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Detect Media Files
+      - name: Detect Added or Modified Media Files
         id: detect
         run: |
           set -euo pipefail
-          MEDIA_FILES=$(find documentation -type f ! -name "*.md" 2>/dev/null || true)
-          if [ -z "$MEDIA_FILES" ]; then
-            echo "No media files found."
+          RAW_CHANGED="${{ needs.check-altered-files.outputs.ALL_CHANGED_FILES }}"
+          echo "Raw changed files:"
+          echo "$RAW_CHANGED"
+
+          # Apenas ficheiros não Markdown em /documentation/
+          CHANGED_MEDIA=$(echo "$RAW_CHANGED" | tr ' ' '\n' | grep '^documentation/' | grep -v '\.md$' || true)
+
+          if [ -z "$CHANGED_MEDIA" ]; then
+            echo "No new or modified media files detected."
             echo "MEDIA_FILES=" >> "$GITHUB_ENV"
           else
-            echo "📸 Media files detected:"
-            echo "$MEDIA_FILES"
-            echo "MEDIA_FILES=$(echo "$MEDIA_FILES" | paste -sd ';' -)" >> "$GITHUB_ENV"
+            echo "📸 Media files to upload/update:"
+            echo "$CHANGED_MEDIA"
+            echo "MEDIA_FILES=$(echo "$CHANGED_MEDIA" | paste -sd ';' -)" >> "$GITHUB_ENV"
           fi
 
-      - name: Criar estrutura de pastas no Wiki.js
-        id: criar-pastas
+      - name: Ensure asset folders exist
+        if: env.MEDIA_FILES != ''
         env:
           WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
         run: |
           set -euo pipefail
-
           APP_PATH="${ASSET_PATH_SAFE}/documentation"
           BASE_URL="${WIKI_URL%/graphql}"
           GRAPHQL_URL="${BASE_URL}/graphql"
@@ -682,57 +688,51 @@ jobs:
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data "$(jq -n --arg q "$m" '{query:$q}')")
-            local ok=$(echo "$r" | jq -r '.data.assets.createFolder.responseResult.succeeded')
-            if [ "$ok" != "true" ]; then
-              echo "❌ Falha ao criar pasta '$name'"; echo "$r" | jq .; exit 1
-            fi
+            echo "$r" | jq .
           }
 
-          echo "📂 Estrutura alvo: $APP_PATH"
+          echo "📂 Ensuring folder path: $APP_PATH"
           IFS='/' read -ra PARTS <<< "$APP_PATH"
           CURRENT_PARENT=""
 
           for PART in "${PARTS[@]}"; do
             [ -z "$PART" ] && continue
-            echo "→ Verificar '$PART' sob parent '${CURRENT_PARENT:-0}'"
             ID=$(get_folder_id "$CURRENT_PARENT" "$PART" | head -n1 || true)
             if [[ -z "$ID" || "$ID" == "null" ]]; then
-              echo "… não existe, a criar..."
+              echo "Creating '$PART'..."
               create_folder "$CURRENT_PARENT" "$PART"
               ID=$(get_folder_id "$CURRENT_PARENT" "$PART" | head -n1 || true)
-              [ -z "$ID" ] && { echo "Falha ao obter ID da pasta '$PART'"; exit 1; }
-              echo "✓ Criada: id=$ID"
-            else
-              echo "✓ Já existe: id=$ID"
             fi
+            echo "✓ '$PART' id=$ID"
             CURRENT_PARENT="$ID"
           done
 
           echo "DOC_ROOT_FOLDER_ID=$CURRENT_PARENT" >> "$GITHUB_ENV"
           echo "UPLOAD_URL=$UPLOAD_URL" >> "$GITHUB_ENV"
 
-      - name: Upload Media Files
+      - name: Upload new or changed media
         if: env.MEDIA_FILES != ''
         env:
           WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
         run: |
           set -euo pipefail
           FAILED=0
-          echo "📦 Root folder id: ${DOC_ROOT_FOLDER_ID}"
           IFS=';' read -ra FILES <<< "$MEDIA_FILES"
 
           for filepath in "${FILES[@]}"; do
             [ -z "$filepath" ] && continue
             if [ ! -f "$filepath" ]; then
-              echo "⚠️ Missing file: $filepath"; continue
+              echo "⚠️  Missing file: $filepath"
+              continue
             fi
-            echo "⬆️ Uploading '$filepath'..."
-            RESP=$(curl -s -w "\n%{http_code}" -X POST "$UPLOAD_URL" \
+            echo "⬆️ Uploading or replacing '$filepath'..."
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$UPLOAD_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -F "mediaUpload={\"folderId\":${DOC_ROOT_FOLDER_ID}}" \
               -F "mediaUpload=@$filepath")
-            CODE=$(echo "$RESP" | tail -n1)
-            BODY=$(echo "$RESP" | sed '$d')
+            CODE=$(echo "$RESPONSE" | tail -n1)
+            BODY=$(echo "$RESPONSE" | sed '$d')
+
             if [[ "$CODE" =~ ^2 ]]; then
               echo "✅ Uploaded: $filepath"
             else
@@ -742,5 +742,5 @@ jobs:
             fi
           done
 
-          [ "$FAILED" -gt 0 ] && { echo "⚠️ $FAILED uploads failed"; exit 1; }
-          echo "✅ All media uploaded successfully."
+          [ "$FAILED" -gt 0 ] && exit 1
+          echo "✅ Media sync complete."
