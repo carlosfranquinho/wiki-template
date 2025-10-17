@@ -531,7 +531,7 @@ jobs:
             repo_prefix="${repo_prefix//\/\//\/}"
 
             local QUERY='query ($locale: String!) {
-              pages { list(locale: $locale) { id path } }
+              pages { list(locale: $locale) { id title path } }
             }'
 
             local PAYLOAD
@@ -543,26 +543,18 @@ jobs:
               -H "Content-Type: application/json" \
               --data "$PAYLOAD")
 
-            echo "🔎 get_page_id: repo_prefix='${repo_prefix}' target='${target}'" >&2
-
-            # Debug: mostra as páginas encontradas dentro do prefixo
+            echo "🔎 get_page_id DEBUG" >&2
+            echo "repo_prefix='$repo_prefix'" >&2
+            echo "target='$target'" >&2
+            echo "Lista de páginas sob esse prefixo:" >&2
             echo "$RESULT" | jq -r --arg prefix "$repo_prefix" '
               .data.pages.list[]?
               | select(.path | startswith($prefix))
-              | [.id, .path] | @tsv
+              | [.id, .title, .path] | @tsv
             ' | sed 's/^/[paths]/' >&2
 
-            # Comparação robusta (ignora case e "ç"/"c")
-            echo "$RESULT" | jq -r \
-              --arg prefix "$repo_prefix" --arg target "$target" '
-                .data.pages.list[]?
-                | select(.path | startswith($prefix))
-                | select(
-                    ((.path | ascii_downcase | gsub("ç";"c") | gsub("Ç";"c")) ==
-                    ($target | ascii_downcase | gsub("ç";"c") | gsub("Ç";"c")))
-                  )
-                | .id
-              ' | head -n 1
+            # Sem devolver nada (temporário)
+            return 0
           }
 
 
