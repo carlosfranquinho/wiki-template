@@ -124,7 +124,7 @@ jobs:
       missing_files: ${{ steps.check.outputs.missing_files }}
       docs_files: ${{ steps.check.outputs.docs_files }}
       missing_count: ${{ steps.check.outputs.missing_count }}
-    
+
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -134,107 +134,77 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Definir Paths
-          REPO_PATH_LOG="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
-          REPO_SLUG="$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')" # sanitized for Wiki.js path
-          REPO_PATH="$(echo "${BASE_PATH}/${REPO_SLUG}" | sed 's#//*#/#g' | sed 's#/$##')" # sanitized for Wiki.js path
-          DOC_PREFIX="$(echo "${REPO_PATH}/documentation/" | sed 's#//*#/#g')" # sanitized for Wiki.js path
-          README_PATH="$(echo "${REPO_PATH}/readme" | sed 's#//*#/#g')" # sanitized for Wiki.js path
-          CHANGELOG_PATH="$(echo "${REPO_PATH}/changelog" | sed 's#//*#/#g')" # sanitized for Wiki.js path
+          # --- Paths ---
+          REPO_SLUG="$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null \
+            | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')"
 
-          echo "🔍 Verificações:"
-          echo "  • REPO_PATH      = $REPO_PATH_LOG"
-          echo "  • DOC_PREFIX     = $DOC_PREFIX"
-          echo
+          REPO_PATH="$(echo "${BASE_PATH}/${REPO_SLUG}" | sed 's#//*#/#g; s#/$##')"
+          DOC_PREFIX="${REPO_PATH}/documentation/"
+          README_PATH="${REPO_PATH}/readme"
+          CHANGELOG_PATH="${REPO_PATH}/changelog"
 
+          echo "🔍 Checking Wiki structure for ${REPO_PATH}"
+
+          # --- Query restricted to tagged pages ---
           QUERY=$(cat <<'GRAPHQL'
           query ($locale: String!) {
             pages {
-              list(locale: $locale) {
+              list(locale: $locale, tags: ["gh-sync"]) {
                 id
                 path
                 title
+                tags
               }
             }
           }
           GRAPHQL
           )
 
-          JSON_PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" '{query: $q, variables: { locale: $loc }}')
-
-          echo "Querying Wiki.js for all pages..."
+          JSON_PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" \
+            '{query: $q, variables: { locale: $loc }}')
 
           RESULT=$(curl -sS -X POST "$WIKI_URL" \
             -H "Authorization: Bearer $WIKI_API_TOKEN" \
             -H "Content-Type: application/json" \
-            --data "$JSON_PAYLOAD" \
-            | jq --arg prefix "$BASE_PATH" '{data:{pages:{list:[.data.pages.list[] | select(.path | startswith($prefix))]}}}')
+            --data "$JSON_PAYLOAD")
 
-          echo "Filtered Wiki pages under base path '$BASE_PATH':"
-          echo "$RESULT" | jq -r '.data.pages.list[].path'
-
-
-          # Verrificar se Existem erros no resultado
-          ERR_CNT=$(echo "$RESULT" | jq '.errors | length // 0')
-          if [ "$ERR_CNT" -gt 0 ]; then
-            echo "❌ Erros na consulta:"
-            echo "$RESULT" | jq '.errors'
-            exit 1
+          # --- Verificação de erros ---
+          if jq -e '.errors' >/dev/null 2>&1 <<<"$RESULT"; then
+            echo "❌ GraphQL error:"; echo "$RESULT" | jq '.errors'; exit 1
           fi
 
-          # Flags para verificar se os paths existem
-          HAS_REPO_PATH=$(echo "$RESULT" | jq --arg path "$REPO_PATH" '[.data.pages.list[] | select(.path | startswith($path))] | length > 0')
-          HAS_DOCUMENTATION_FOLDER=$(echo "$RESULT" | jq --arg path "$DOC_PREFIX" '[.data.pages.list[] | select(.path | startswith($path))] | length > 0')
-          HAS_README_PAGE=$(echo "$RESULT" | jq --arg path "$README_PATH" '[.data.pages.list[] | select(.path == $path)] | length > 0')
-          HAS_CHANGELOG_PAGE=$(echo "$RESULT" | jq --arg path "$CHANGELOG_PATH" '[.data.pages.list[] | select(.path == $path)] | length > 0')
+          # --- Flags principais ---
+          HAS_REPO_PATH=$(echo "$RESULT" | jq --arg path "$REPO_PATH" \
+            '[.data.pages.list[] | select(.path | startswith($path))] | length > 0')
+          HAS_DOCUMENTATION_FOLDER=$(echo "$RESULT" | jq --arg path "$DOC_PREFIX" \
+            '[.data.pages.list[] | select(.path | startswith($path))] | length > 0')
+          HAS_README_PAGE=$(echo "$RESULT" | jq --arg path "$README_PATH" \
+            '[.data.pages.list[] | select(.path == $path)] | length > 0')
+          HAS_CHANGELOG_PAGE=$(echo "$RESULT" | jq --arg path "$CHANGELOG_PATH" \
+            '[.data.pages.list[] | select(.path == $path)] | length > 0')
 
-
-          # List all .md files in documentation folder
-          DOC_FILES=$(find documentation -type f -name "*.md" | sed 's#^documentation/##')
-          DOC_FILES=($DOC_FILES)  # Convert to array
-
-          # Remove the Extension from the filenames
-          for i in "${!DOC_FILES[@]}"; do
-            DOC_FILES[$i]=$(basename "${DOC_FILES[$i]}" .md)
-          done
-
-          # Verificar se esses arquivos existem na Wiki
+          # --- Ficheiros locais ---
+          DOC_FILES=($(find documentation -type f -name "*.md" -exec basename {} .md \;))
           MISSING_FILES=()
+
           for FILE in "${DOC_FILES[@]}"; do
             FILE_PATH="${DOC_PREFIX}${FILE}"
-            # echo "  • Checking if $FILE_PATH exists in Wiki..."
-            EXISTS=$(echo "$RESULT" | jq --arg path "$FILE_PATH" '[.data.pages.list[] | select(.path == $path)] | length > 0')
-            if [ "$EXISTS" != "true" ]; then
-              MISSING_FILES+=("$FILE_PATH")
-            fi
+            EXISTS=$(echo "$RESULT" | jq --arg path "$FILE_PATH" \
+              '[.data.pages.list[] | select(.path == $path)] | length > 0')
+            [ "$EXISTS" != "true" ] && MISSING_FILES+=("$FILE_PATH")
           done
 
-          if [ ${#MISSING_FILES[@]} -gt 0 ]; then
-            echo "  • Missing documentation files in Wiki:"
-            for FILE in "${MISSING_FILES[@]}"; do
-              echo "    - $FILE"
-            done
-          fi
-          echo "✅ Verificações concluídas."
-
-          # Set outputs
-          echo "has_repo_path=$HAS_REPO_PATH" >> $GITHUB_OUTPUT
-          echo "has_documentation_folder=$HAS_DOCUMENTATION_FOLDER" >> $GITHUB_OUTPUT
-          echo "has_readme_page=$HAS_README_PAGE" >> $GITHUB_OUTPUT
-          echo "has_changelog_page=$HAS_CHANGELOG_PAGE" >> $GITHUB_OUTPUT
-          echo "repo_path=$REPO_PATH" >> $GITHUB_OUTPUT
-          echo "missing_files=${MISSING_FILES[*]}" >> $GITHUB_OUTPUT
+          # --- Outputs ---
+          echo "has_repo_path=$HAS_REPO_PATH" >> "$GITHUB_OUTPUT"
+          echo "has_documentation_folder=$HAS_DOCUMENTATION_FOLDER" >> "$GITHUB_OUTPUT"
+          echo "has_readme_page=$HAS_README_PAGE" >> "$GITHUB_OUTPUT"
+          echo "has_changelog_page=$HAS_CHANGELOG_PAGE" >> "$GITHUB_OUTPUT"
+          echo "repo_path=$REPO_PATH" >> "$GITHUB_OUTPUT"
+          echo "missing_files=${MISSING_FILES[*]}" >> "$GITHUB_OUTPUT"
           echo "missing_count=${#MISSING_FILES[@]}" >> "$GITHUB_OUTPUT"
-          echo "docs_files=${DOC_FILES[*]}" >> $GITHUB_OUTPUT
+          echo "docs_files=${DOC_FILES[*]}" >> "$GITHUB_OUTPUT"
 
-          # Echo dos outputs para debug
-          echo "✅ Outputs set:"
-          echo "  • has_repo_path = $HAS_REPO_PATH"
-          echo "  • has_documentation_folder = $HAS_DOCUMENTATION_FOLDER"
-          echo "  • has_readme_page = $HAS_README_PAGE"
-          echo "  • has_changelog_page = $HAS_CHANGELOG_PAGE"
-          echo "  • missing_files = ${MISSING_FILES[*]}"
-          echo "  • docs_files = ${DOC_FILES[*]}"
+          echo "✅ Wiki discovery complete."
 
   # --- Phase 3: Change Detection ---
   check-altered-files:
@@ -318,6 +288,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [setup-env, check-pages-folders]
     if: needs.check-pages-folders.outputs.has_repo_path == 'false' || needs.check-pages-folders.outputs.missing_count > 0
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -345,72 +316,29 @@ jobs:
               -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
           }
 
-          # === Resolve ID por caminho EXATO dentro de BASE_PATH/REPO_SLUG ===
-          get_page_id() {
-            local rel_path="$1"     # ex: Pedro/Aplicações/App-One/readme (sem barra inicial)
-            # normaliza para começar com uma única barra
-            local target="/${rel_path#/}"
-
-            # slug do repo (mesmo algoritmo usado no resto do pipeline)
-            local repo_slug
-            repo_slug=$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null \
-                        | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')
-
-            # prefixo obrigatório do repo
-            local repo_prefix="/${BASE_PATH}/${repo_slug}"
-            repo_prefix="${repo_prefix//\/\//\/}"   # compacta //
-
-            # Query simples
-            local QUERY='query ($locale: String!) {
-              pages { list(locale: $locale) { id path } }
-            }'
-            local PAYLOAD
-            PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" '{query:$q,variables:{locale:$loc}}')
-
-            local RESULT
-            RESULT=$(curl -sS -X POST "$WIKI_URL" \
-              -H "Authorization: Bearer $WIKI_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data "$PAYLOAD")
-
-            # DEBUG curto: mostra 5 paths sob o prefixo do repo
-            echo "🔎 get_page_id: repo_prefix='${repo_prefix}' target='${target}'" 1>&2
-            echo "$RESULT" | jq -r --arg prefix "$repo_prefix" '
-              .data.pages.list[]? | select(.path | startswith($prefix)) | .path
-            ' | head -n 5 | sed 's/^/[paths]/' 1>&2
-
-            # Seleção EXATA: começa pelo prefixo do repo E é exatamente o target
-            echo "$RESULT" | jq -r \
-              --arg prefix "$repo_prefix" --arg target "$target" '
-                .data.pages.list[]?
-                | select(.path | startswith($prefix))
-                | select(.path == $target)
-                | .id
-              ' | head -n 1
-          }
-
-          # === Update minimalista (só content), comprovado que a API aceita universalmente ===
-          update_wiki_page() {
-            local id="$1"
-            local content_file="$2"
+          # Create a new page in Wiki.js with tag "gh-sync"
+          create_wiki_page() {
+            local src="$1"
+            local path="$2"
             local title="$3"
+            local content="$4"
 
-            local CONTENT
-            CONTENT=$(tr -d '\r' < "$content_file")
+            echo "🆕 Creating page: $path"
 
-            local QUERY='mutation ($id: Int!, $content: String!, $locale: String!) {
+            local QUERY='mutation ($path: String!, $title: String!, $content: String!, $locale: String!) {
               pages {
-                update(
-                  id: $id,
+                create(
+                  path: $path,
+                  title: $title,
                   content: $content,
                   editor: "markdown",
                   isPrivate: false,
                   isPublished: true,
                   locale: $locale,
-                  tags: []
+                  tags: ["gh-sync"]
                 ) {
                   responseResult { succeeded message }
-                  page { id path updatedAt }
+                  page { id path title tags }
                 }
               }
             }'
@@ -418,10 +346,11 @@ jobs:
             local PAYLOAD
             PAYLOAD=$(jq -n \
               --arg q "$QUERY" \
-              --arg id "$id" \
-              --arg content "$CONTENT" \
+              --arg path "$path" \
+              --arg title "$title" \
+              --arg content "$content" \
               --arg loc "$WIKI_LOCALE" \
-              '{query:$q, variables:{ id: ($id|tonumber), content:$content, locale:$loc }}')
+              '{ query: $q, variables: { path: $path, title: $title, content: $content, locale: $loc } }')
 
             local RESULT
             RESULT=$(curl -sS -X POST "$WIKI_URL" \
@@ -430,14 +359,15 @@ jobs:
               --data "$PAYLOAD")
 
             local OK
-            OK=$(echo "$RESULT" | jq -r '.data.pages.update.responseResult.succeeded // empty')
+            OK=$(echo "$RESULT" | jq -r '.data.pages.create.responseResult.succeeded // empty')
+
             if [ "$OK" = "true" ]; then
-              local TS
-              TS=$(echo "$RESULT" | jq -r '.data.pages.update.page.updatedAt')
-              echo "✅ Updated $title successfully at $TS"
+              local NEW_ID
+              NEW_ID=$(echo "$RESULT" | jq -r '.data.pages.create.page.id')
+              echo "✅ Created page \"$title\" (ID: $NEW_ID)"
             else
-              echo "⚠️ Failed to update $title"
-              echo "$RESULT" | jq .
+              echo "⚠️ Failed to create page \"$title\""
+              echo "$RESULT" | jq '.errors // .data.pages.create.responseResult'
               exit 1
             fi
           }
@@ -454,25 +384,24 @@ jobs:
           DOC_PREFIX="${REPO_PATH}/documentation"
           echo "📂 Base path: $REPO_PATH"
 
-          # Helper for image paths
           ASSET_PATH_SAFE="${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}"
           export ASSET_PATH_SAFE
 
-          # --- Create README ---
+          # README
           if [ "${{ needs.check-pages-folders.outputs.has_readme_page }}" = "false" ] && [ -f README.md ]; then
             echo "🪶 Creating README..."
             CONTENT=$(tr -d '\r' < README.md | fix_image_paths | normalize_markdown_links)
             create_wiki_page "README.md" "${REPO_PATH}/readme" "README" "$CONTENT"
           fi
 
-          # --- Create CHANGELOG ---
+          # CHANGELOG
           if [ "${{ needs.check-pages-folders.outputs.has_changelog_page }}" = "false" ] && [ -f CHANGELOG.md ]; then
             echo "📜 Creating CHANGELOG..."
             CONTENT=$(tr -d '\r' < CHANGELOG.md | fix_image_paths | normalize_markdown_links)
             create_wiki_page "CHANGELOG.md" "${REPO_PATH}/changelog" "CHANGELOG" "$CONTENT"
           fi
 
-          # --- Create missing documentation files ---
+          # Documentation files
           MISSING_FILES=(${{ needs.check-pages-folders.outputs.missing_files }})
           if [ "${#MISSING_FILES[@]}" -gt 0 ]; then
             echo "📘 Creating ${#MISSING_FILES[@]} missing documentation files..."
@@ -493,6 +422,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [setup-env, check-pages-folders, check-altered-files]
     if: needs.check-pages-folders.outputs.has_repo_path == 'true'
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -506,7 +436,8 @@ jobs:
       - name: Prepare shared functions
         run: |
           set -euo pipefail
-          cat > scripts/wiki_utils.sh <<'EOF'
+          mkdir -p scripts
+          cat <<'EOF' > scripts/wiki_utils.sh
           #!/usr/bin/env bash
           set -euo pipefail
           source scripts/fix_paths.sh
@@ -519,6 +450,7 @@ jobs:
               -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
           }
 
+          # Get page ID scoped to current repo
           get_page_id() {
             local rel_path="$1"
             local target="${rel_path#/}"
@@ -531,7 +463,9 @@ jobs:
             repo_prefix="${repo_prefix//\/\//\/}"
 
             local QUERY='query ($locale: String!) {
-              pages { list(locale: $locale) { id title path } }
+              pages {
+                list(locale: $locale, tags: ["gh-sync"]) { id title path }
+              }
             }'
 
             local PAYLOAD
@@ -555,6 +489,7 @@ jobs:
               ' | head -n 1
           }
 
+          # Update keeping tag "gh-sync"
           update_wiki_page() {
             local id="$1"
             local content_file="$2"
@@ -572,7 +507,7 @@ jobs:
                   isPrivate: false,
                   isPublished: true,
                   locale: $locale,
-                  tags: []
+                  tags: ["gh-sync"]
                 ) {
                   responseResult { succeeded message }
                   page { id path updatedAt }
@@ -586,11 +521,10 @@ jobs:
               --arg id "$id" \
               --arg content "$CONTENT" \
               --arg loc "$WIKI_LOCALE" \
-              '{query: $q, variables: {id: ($id | tonumber), content: $content, locale: $loc}}'
-            )
+              '{query: $q, variables: {id: ($id | tonumber), content: $content, locale: $loc}}')
 
             local RESULT
-            RESULT=$(curl -s -X POST "$WIKI_URL" \
+            RESULT=$(curl -sS -X POST "$WIKI_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data "$JSON_PAYLOAD")
@@ -602,7 +536,7 @@ jobs:
               echo "✅ $title updated (ID $id)"
             else
               echo "⚠️  Failed to update $title (ID $id)"
-              echo "$RESULT" | jq .errors
+              echo "$RESULT" | jq '.errors // .data.pages.update.responseResult'
               exit 1
             fi
           }
@@ -678,6 +612,7 @@ jobs:
           else
             echo "ℹ️ No documentation files changed."
           fi
+
 
   # --- Phase 6: Asset Upload ---
   upload-docs-media:
