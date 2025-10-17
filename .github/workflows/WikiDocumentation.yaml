@@ -300,69 +300,45 @@ jobs:
           fi
   
   # --- Phase 4: Content Creation ---
-  create-missing-files:
-    name: "Create Missing Documentation Files"
+  create-pages:
+    name: "Create Missing Wiki Pages"
     runs-on: ubuntu-latest
     needs: [setup-env, check-pages-folders]
-    if: needs.check-pages-folders.outputs.has_repo_path == 'false' && fromJSON(needs.check-pages-folders.outputs.missing_count) > 0
+    if: needs.check-pages-folders.outputs.has_repo_path == 'false'
     steps:
-      - name: Checkout Repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download helper script
+      - name: Download helper scripts
         uses: actions/download-artifact@v4
         with:
           name: fix_paths_script
-          path: scripts  
+          path: scripts
 
-      - name: Create Documentation Missing Files
+      - name: Prepare shared functions
         run: |
           set -euo pipefail
+          cat > scripts/wiki_utils.sh <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
 
-          # Importar função partilhada
           source scripts/fix_paths.sh
 
-          REPO_PATH_LOG="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
-          REPO_SLUG="$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')" # sanitized for Wiki.js path
-          REPO_PATH="$(echo "${BASE_PATH}/${REPO_SLUG}" | sed 's#//*#/#g' | sed 's#/$##')" # sanitized for Wiki.js path
-          DOC_PREFIX="$(echo "${REPO_PATH}/documentation/" | sed 's#//*#/#g')" # sanitized for Wiki.js path
+          normalize_markdown_links() {
+            sed -E \
+              -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
+              -e 's#\]\([[:space:]]*documentation/#](./documentation/#g' \
+              -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md([?#][^)]*)\)#](./documentation/\1\2)#g' \
+              -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
+          }
 
-          # Read missing files from output
-          missing_files=(${{ needs.check-pages-folders.outputs.missing_files }})
-          echo "Missing files to create: ${missing_files[*]}"
+          create_wiki_page() {
+            local file="$1"
+            local path="$2"
+            local title="$3"
+            local content="$4"
 
-          ASSET_PATH_SAFE="${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}"
-          ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
-          if [ -z "$ASSET_PATH_SAFE" ]; then
-            ASSET_PREFIX="/documentation/"
-          fi
-          echo "🔗 Asset prefix: $ASSET_PREFIX"
-
-          for FILE in "${missing_files[@]}"; do
-            echo "  • Will create: $FILE"
-            src_md="documentation/$(basename "$FILE").md"
-
-            if [ ! -f "$src_md" ]; then
-              echo "⚠️ Ficheiro não encontrado: $src_md"
-              continue
-            fi
-
-            echo "🔧 Corrigindo paths de imagens em $src_md"
-            CONTENT=$(tr -d '\r' < "$src_md" | fix_image_paths)
-
-            # Limpeza adicional de links relativos a outros .md
-            CONTENT=$(
-              printf '%s\n' "$CONTENT" | sed -E \
-                -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
-                -e 's#\]\([[:space:]]*documentation/#](./documentation/#g' \
-                -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md([?#][^)]*)\)#](./documentation/\1\2)#g' \
-                -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
-            )
-
-            TITLE="$(basename "$FILE")"
-            echo "    - Title: $TITLE"
-
-            QUERY='mutation ($content: String!, $locale: String!, $path: String!, $title: String!) {
+            local QUERY='mutation ($content: String!, $locale: String!, $path: String!, $title: String!) {
               pages {
                 create(
                   path: $path,
@@ -381,237 +357,72 @@ jobs:
               }
             }'
 
-            JSON_PAYLOAD=$(jq -n \
+            local PAYLOAD=$(jq -n \
               --arg q "$QUERY" \
-              --arg content "$CONTENT" \
+              --arg content "$content" \
               --arg loc "$WIKI_LOCALE" \
-              --arg path "$FILE" \
-              --arg title "$TITLE" \
+              --arg path "$path" \
+              --arg title "$title" \
               '{query: $q, variables: { content: $content, locale: $loc, path: $path, title: $title }}')
 
-            RESULT=$(curl -s -X POST "$WIKI_URL" \
+            local RESULT=$(curl -s -X POST "$WIKI_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -H "Content-Type: application/json" \
-              --data "$JSON_PAYLOAD")
-            
-            echo "$RESULT" | jq .
+              --data "$PAYLOAD")
 
-            SUCCEEDED=$(echo "$RESULT" | jq -r '.data.pages.create.responseResult.succeeded // empty')
-            
+            local SUCCEEDED=$(echo "$RESULT" | jq -r '.data.pages.create.responseResult.succeeded // empty')
             if [ "$SUCCEEDED" = "true" ]; then
-              echo "✅ Created: $FILE"
-              PAGE_ID=$(echo "$RESULT" | jq -r .data.pages.create.page.id)
-              echo "Page ID: $PAGE_ID"
-
-              TITLE_SAFE="${TITLE^^}"
-              TITLE_SAFE="${TITLE_SAFE//[^A-Z0-9_]/_}"
-              VAR_NAME="WIKI_${TITLE_SAFE}_ID"
-
-              echo "Saving $VAR_NAME=$PAGE_ID to repository variables…"
-              # gh variable set "$VAR_NAME" --body "$PAGE_ID"
+              echo "✅ Created $title at $path"
             else
-              echo "⚠️ Failed to create: $FILE"
-              echo "$RESULT" | jq .errors
+              echo "⚠️ Failed to create $title ($file)"
+              echo "$RESULT" | jq -r '.data.pages.create.responseResult.message'
               exit 1
             fi
-          done
-  
-  create-readme-page:
-    name: "Create README Page if missing"
-    runs-on: ubuntu-latest
-    needs: [setup-env, check-pages-folders]
-    if: needs.check-pages-folders.outputs.has_repo_path == 'false' && needs.check-pages-folders.outputs.has_readme_page == 'false'
-    env:
-      ASSET_PATH_SAFE: ${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}
-    steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v4
+          }
+          EOF
+          chmod +x scripts/wiki_utils.sh
 
-      - name: Download helper script
-        uses: actions/download-artifact@v4
-        with:
-          name: fix_paths_script
-          path: scripts  
-      
-      - name: Create README Page in Wiki.js
+      - name: Create pages in Wiki.js
         run: |
           set -euo pipefail
+          source scripts/wiki_utils.sh
 
-          # Importar função partilhada
-          source scripts/fix_paths.sh
+          REPO_SLUG=$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')
+          REPO_PATH="${BASE_PATH}/${REPO_SLUG}"
+          DOC_PREFIX="${REPO_PATH}/documentation"
+          echo "📂 Base path: $REPO_PATH"
 
-          # ------------------------------------------------------------
-          # 🧭 Caminhos principais
-          # ------------------------------------------------------------
-          REPO_PATH_LOG="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
-          REPO_SLUG="$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')" # sanitized for Wiki.js path
-          REPO_PATH="$(echo "${BASE_PATH}/${REPO_SLUG}" | sed 's#//*#/#g' | sed 's#/$##')" # sanitized for Wiki.js path
-          README_PATH="$(echo "${REPO_PATH}/readme" | sed 's#//*#/#g')" # sanitized for Wiki.js path
-          echo "📄 REPO_PATH: ${REPO_PATH_LOG}"
-          echo "📘 README_PATH: ${README_PATH}"
+          # Helper for image paths
+          ASSET_PATH_SAFE="${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}"
+          export ASSET_PATH_SAFE
 
-          if [ ! -f README.md ]; then
-            echo "❌ README.md não encontrado no repositório."
-            exit 1
+          # --- Create README ---
+          if [ "${{ needs.check-pages-folders.outputs.has_readme_page }}" = "false" ] && [ -f README.md ]; then
+            echo "🪶 Creating README..."
+            CONTENT=$(tr -d '\r' < README.md | fix_image_paths | normalize_markdown_links)
+            create_wiki_page "README.md" "${REPO_PATH}/readme" "README" "$CONTENT"
           fi
 
-          # ------------------------------------------------------------
-          # ✏️ Corrigir paths e ler conteúdo
-          # ------------------------------------------------------------
-          echo "🔧 Corrigindo paths de imagens em README.md"
-          CONTENT=$(tr -d '\r' < README.md | fix_image_paths)
+          # --- Create CHANGELOG ---
+          if [ "${{ needs.check-pages-folders.outputs.has_changelog_page }}" = "false" ] && [ -f CHANGELOG.md ]; then
+            echo "📜 Creating CHANGELOG..."
+            CONTENT=$(tr -d '\r' < CHANGELOG.md | fix_image_paths | normalize_markdown_links)
+            create_wiki_page "CHANGELOG.md" "${REPO_PATH}/changelog" "CHANGELOG" "$CONTENT"
+          fi
 
-          # ------------------------------------------------------------
-          # 🔗 Reescrever links relativos (markdown internos)
-          # ------------------------------------------------------------
-          CONTENT=$(
-            printf '%s\n' "$CONTENT" | sed -E \
-              -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
-              -e 's#\]\([[:space:]]*documentation/#](./documentation/#g' \
-              -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md([?#][^)]*)\)#](./documentation/\1\2)#g' \
-              -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
-          )
-
-          # ------------------------------------------------------------
-          # 🚀 Criar página via GraphQL
-          # ------------------------------------------------------------
-          QUERY='mutation ($content: String!, $locale: String!, $path: String!) {
-            pages {
-              create(
-                path: $path,
-                title: "README",
-                content: $content,
-                editor: "markdown",
-                isPrivate: false,
-                isPublished: true,
-                locale: $locale,
-                tags: [],
-                description: ""
-              ) {
-                responseResult { succeeded slug message }
-                page { id title path updatedAt }
-              }
-            }
-          }'
-
-          JSON_PAYLOAD=$(jq -n \
-            --arg q "$QUERY" \
-            --arg content "$CONTENT" \
-            --arg loc "$WIKI_LOCALE" \
-            --arg path "$README_PATH" \
-            '{ query: $q, variables: { content: $content, locale: $loc, path: $path } }')
-
-          RESULT=$(curl -s -X POST "$WIKI_URL" \
-            -H "Authorization: Bearer $WIKI_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            --data "$JSON_PAYLOAD")
-
-          echo "$RESULT" | jq .
-
-          SUCCEEDED=$(echo "$RESULT" | jq -r '.data.pages.create.responseResult.succeeded // empty')
-          if [ "$SUCCEEDED" = "true" ]; then
-            PAGE_ID=$(echo "$RESULT" | jq -r .data.pages.create.page.id)
-            echo "✅ Página README criada com sucesso! (ID: $PAGE_ID)"
+          # --- Create missing documentation files ---
+          MISSING_FILES=(${{ needs.check-pages-folders.outputs.missing_files }})
+          if [ "${#MISSING_FILES[@]}" -gt 0 ]; then
+            echo "📘 Creating ${#MISSING_FILES[@]} missing documentation files..."
+            for FILE in "${MISSING_FILES[@]}"; do
+              SRC="documentation/$(basename "$FILE").md"
+              [ ! -f "$SRC" ] && echo "⚠️ Missing local file $SRC" && continue
+              TITLE=$(basename "$FILE")
+              CONTENT=$(tr -d '\r' < "$SRC" | fix_image_paths | normalize_markdown_links)
+              create_wiki_page "$SRC" "$FILE" "$TITLE" "$CONTENT"
+            done
           else
-            echo "⚠️ Falha ao criar página README"
-            echo "$RESULT" | jq -r '.data.pages.create.responseResult.message'
-            exit 1
-          fi
-  
-  create-changelog-page:
-    name: "Create CHANGELOG Page if missing"
-    runs-on: ubuntu-latest
-    needs: [setup-env, check-pages-folders]
-    if: needs.check-pages-folders.outputs.has_repo_path == 'false' && needs.check-pages-folders.outputs.has_changelog_page == 'false'
-    env:
-      ASSET_PATH_SAFE: ${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}
-    steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v4
-
-      - name: Create CHANGELOG Page in Wiki.js
-        run: |
-          set -euo pipefail
-
-          # ------------------------------------------------------------
-          # 1️⃣ Construir caminho REPO_PATH e CHANGELOG_PATH
-          # ------------------------------------------------------------
-          REPO_PATH_LOG="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
-          REPO_SLUG="$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')" # sanitized for Wiki.js path
-          REPO_PATH="$(echo "${BASE_PATH}/${REPO_SLUG}" | sed 's#//*#/#g' | sed 's#/$##')" # sanitized for Wiki.js path
-          CHANGELOG_PATH="$(echo "${REPO_PATH}/changelog" | sed 's#//*#/#g')" # sanitized for Wiki.js path
-          echo "📄 CHANGELOG_PATH: ${CHANGELOG_PATH}"
-
-          ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
-          if [ -z "${ASSET_PATH_SAFE:-}" ]; then
-            ASSET_PREFIX="/documentation/"
-          fi
-
-          # ------------------------------------------------------------
-          # 3️⃣ Ler o conteúdo do ficheiro CHANGELOG.md
-          # ------------------------------------------------------------
-          if [ ! -f CHANGELOG.md ]; then
-            echo "❌ Ficheiro CHANGELOG.md não encontrado no repositório."
-            exit 1
-          fi
-
-          CONTENT=$(tr -d '\r' < CHANGELOG.md)
-          CONTENT=$(
-            printf '%s\n' "$CONTENT" | sed -E \
-              -e "s#\]\((<?)(\./)?documentation/#](\1${ASSET_PREFIX}#g" \
-              -e "s#^(\[[^\]]+\]:[[:space:]]*)(<?)(\./)?documentation/#\1\2${ASSET_PREFIX}#g"
-          )
-          echo "✅ Conteúdo do CHANGELOG carregado."
-
-          # ------------------------------------------------------------
-          # 4️⃣ Construir query GraphQL
-          # ------------------------------------------------------------
-          QUERY='mutation ($content: String!, $locale: String!, $path: String!) {
-            pages {
-              create(
-                path: $path,
-                title: "CHANGELOG",
-                content: $content,
-                editor: "markdown",
-                isPrivate: false,
-                isPublished: true,
-                locale: $locale,
-                tags: [],
-                description: "All notable changes to this project will be documented in this file."
-              ) {
-                responseResult { succeeded slug message }
-                page { id title path updatedAt }
-              }
-            }
-          }'
-
-          JSON_PAYLOAD=$(jq -n \
-            --arg q "$QUERY" \
-            --arg content "$CONTENT" \
-            --arg loc "$WIKI_LOCALE" \
-            --arg path "$CHANGELOG_PATH" \
-            '{ query: $q, variables: { content: $content, locale: $loc, path: $path } }')
-
-          # ------------------------------------------------------------
-          # 5️⃣ Enviar para Wiki.js
-          # ------------------------------------------------------------
-          echo "🚀 Criando página CHANGELOG..."
-          RESULT=$(curl -s -X POST "$WIKI_URL" \
-            -H "Authorization: Bearer $WIKI_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            --data "$JSON_PAYLOAD")
-
-          echo "$RESULT" | jq .
-
-          SUCCEEDED=$(echo "$RESULT" | jq -r '.data.pages.create.responseResult.succeeded // empty')
-          if [ "$SUCCEEDED" = "true" ]; then
-            PAGE_ID=$(echo "$RESULT" | jq -r .data.pages.create.page.id)
-            echo "✅ Página CHANGELOG criada com sucesso!"
-            echo "🆔 Page ID: $PAGE_ID"
-          else
-            echo "⚠️ Falha ao criar página CHANGELOG"
-            echo "$RESULT" | jq -r '.data.pages.create.responseResult.message'
-            exit 1
+            echo "✅ No missing documentation files to create."
           fi
 
 
