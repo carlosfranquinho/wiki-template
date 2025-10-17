@@ -437,7 +437,6 @@ jobs:
           else
             echo "✅ No missing documentation files to create."
           fi
-
   # --- Phase 5: Content Updates ---
   update-pages:
     name: "Update Wiki Pages"
@@ -463,7 +462,7 @@ jobs:
           source scripts/fix_paths.sh
 
           # ------------------------------------------------------------
-          # Normalização de links internos em Markdown
+          # Normaliza links Markdown internos
           # ------------------------------------------------------------
           normalize_markdown_links() {
             sed -E \
@@ -474,8 +473,7 @@ jobs:
           }
 
           # ------------------------------------------------------------
-          # Obtém o ID de uma página existente na Wiki.js
-          # Pesquisa apenas dentro de BASE_PATH (não em toda a wiki)
+          # Obtém o ID da página pela path
           # ------------------------------------------------------------
           get_page_id() {
             local path="$1"
@@ -511,18 +509,52 @@ jobs:
           }
 
           # ------------------------------------------------------------
-          # Atualiza o conteúdo de uma página existente
+          # Atualiza a página (carrega metadados e reenvia todos)
           # ------------------------------------------------------------
           update_wiki_page() {
             local id="$1"
             local content="$2"
             local title="$3"
 
-            local QUERY='mutation ($id: Int!, $content: String!, $locale: String!) {
+            echo "🔄 Fetching metadata for page ID $id..."
+            local GET_QUERY='query ($id: Int!) {
+              pages { single(id: $id) {
+                id title path locale editor isPrivate isPublished description tags
+              }}
+            }'
+
+            local GET_PAYLOAD=$(jq -n --arg q "$GET_QUERY" --argjson id "$id" \
+              '{ query: $q, variables: { id: $id } }')
+
+            local META=$(curl -s -X POST "$WIKI_URL" \
+              -H "Authorization: Bearer $WIKI_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "$GET_PAYLOAD")
+
+            local PAGE_JSON=$(echo "$META" | jq -r '.data.pages.single')
+            [ "$PAGE_JSON" = "null" ] && echo "⚠️ Page metadata not found for ID $id" && return
+
+            local EDITOR=$(echo "$PAGE_JSON" | jq -r '.editor // "markdown"')
+            local PATH=$(echo "$PAGE_JSON" | jq -r '.path')
+            local LOCALE=$(echo "$PAGE_JSON" | jq -r '.locale // "en"')
+            local PRIV=$(echo "$PAGE_JSON" | jq -r '.isPrivate // false')
+            local PUB=$(echo "$PAGE_JSON" | jq -r '.isPublished // true')
+            local DESC=$(echo "$PAGE_JSON" | jq -r '.description // ""')
+            local TAGS=$(echo "$PAGE_JSON" | jq -c '.tags // []')
+
+            # Escapar conteúdo para JSON
+            local escaped_content
+            escaped_content=$(printf '%s' "$content" | jq -Rs . | sed 's/^"//; s/"$//')
+
+            local QUERY='mutation ($id: Int!, $content: String!, $title: String!,
+                                     $description: String, $editor: String, $isPrivate: Boolean,
+                                     $isPublished: Boolean, $locale: String, $path: String, $tags: [String]) {
               pages {
-                update(id: $id, content: $content, editor: "markdown",
-                       isPrivate: false, isPublished: true, locale: $locale, tags: []) {
+                update(id: $id, content: $content, title: $title, description: $description,
+                       editor: $editor, isPrivate: $isPrivate, isPublished: $isPublished,
+                       locale: $locale, path: $path, tags: $tags) {
                   responseResult { succeeded message }
+                  page { updatedAt }
                 }
               }
             }'
@@ -530,9 +562,19 @@ jobs:
             local PAYLOAD=$(jq -n \
               --arg q "$QUERY" \
               --argjson id "$id" \
-              --arg content "$content" \
-              --arg loc "$WIKI_LOCALE" \
-              '{query: $q, variables: { id: $id, content: $content, locale: $loc }}')
+              --arg content "$escaped_content" \
+              --arg title "$title" \
+              --arg desc "$DESC" \
+              --arg editor "$EDITOR" \
+              --argjson priv "$PRIV" \
+              --argjson pub "$PUB" \
+              --arg locale "$LOCALE" \
+              --arg path "$PATH" \
+              --argjson tags "$TAGS" \
+              '{ query: $q, variables: { id: $id, content: $content, title: $title,
+                                         description: $desc, editor: $editor,
+                                         isPrivate: $priv, isPublished: $pub,
+                                         locale: $locale, path: $path, tags: $tags } }')
 
             local RESULT=$(curl -s -X POST "$WIKI_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
@@ -541,10 +583,11 @@ jobs:
 
             local OK=$(echo "$RESULT" | jq -r '.data.pages.update.responseResult.succeeded // empty')
             if [ "$OK" = "true" ]; then
-              echo "✅ Updated $title successfully."
+              local TS=$(echo "$RESULT" | jq -r '.data.pages.update.page.updatedAt')
+              echo "✅ Updated $title at $TS"
             else
               echo "⚠️ Failed to update $title"
-              echo "$RESULT" | jq -r '.data.pages.update.responseResult.message'
+              echo "$RESULT" | jq .
               exit 1
             fi
           }
@@ -563,42 +606,33 @@ jobs:
           ASSET_PATH_SAFE="${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}"
           export ASSET_PATH_SAFE
 
-          # --- Ficheiros em falta (não atualizar) ---
           RAW_MISSING="${{ needs.check-pages-folders.outputs.missing_files }}"
           IFS=' ' read -r -a MISSING_FILES <<< "$(echo "$RAW_MISSING" | tr -s ' ')"
-          echo "🧩 Missing files (não atualizáveis): ${MISSING_FILES[*]}"
+          echo "🧩 Missing files: ${MISSING_FILES[*]}"
 
-          # --- Ficheiros de documentação alterados ---
           RAW_CHANGED="${{ needs.check-altered-files.outputs.DOC_FILES_CHANGED }}"
           IFS=' ' read -r -a CHANGED_DOCS <<< "$(echo "$RAW_CHANGED" | tr -s ' ')"
 
-          # --- Flags de alteração ---
           DOCS_CHANGED="${{ needs.check-altered-files.outputs.DOCS_CHANGED }}"
           README_CHANGED="${{ needs.check-altered-files.outputs.README_CHANGED }}"
           CHANGELOG_CHANGED="${{ needs.check-altered-files.outputs.CHANGELOG_CHANGED }}"
 
-          # ------------------------------------------------------------
-          # Função genérica de atualização
-          # ------------------------------------------------------------
           update_if_changed() {
             local file="$1"
             local title="$2"
             local subpath="$3"
-            local changed_flag="$4"
+            local changed="$4"
 
-            if [ "$changed_flag" = "true" ] && [ -f "$file" ]; then
+            if [ "$changed" = "true" ] && [ -f "$file" ]; then
               local path="${REPO_PATH}/${subpath}"
 
               for MISS in "${MISSING_FILES[@]}"; do
-                [[ "$MISS" == *"${subpath}"* ]] && echo "⚠️ Skipping $subpath (still missing in Wiki)" && return
+                [[ "$MISS" == *"${subpath}"* ]] && echo "⚠️ Skipping $subpath (still missing)" && return
               done
 
               echo "🔍 Checking page at $path"
               PAGE_ID=$(get_page_id "$path")
-              if [ -z "$PAGE_ID" ]; then
-                echo "⚠️ Page not found in Wiki ($path)."
-                return
-              fi
+              [ -z "$PAGE_ID" ] && echo "⚠️ No page found for $path" && return
 
               echo "🆔 Page ID: $PAGE_ID"
               CONTENT=$(tr -d '\r' < "$file" | fix_image_paths | normalize_markdown_links)
@@ -608,13 +642,9 @@ jobs:
             fi
           }
 
-          # --- README ---
           update_if_changed "README.md" "README" "readme" "$README_CHANGED"
-
-          # --- CHANGELOG ---
           update_if_changed "CHANGELOG.md" "CHANGELOG" "changelog" "$CHANGELOG_CHANGED"
 
-          # --- Documentation ---
           if [ "$DOCS_CHANGED" = "true" ]; then
             echo "📄 Documentation files to update: ${CHANGED_DOCS[*]}"
             for FILE in "${CHANGED_DOCS[@]}"; do
