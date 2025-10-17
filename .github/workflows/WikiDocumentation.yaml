@@ -449,7 +449,9 @@ jobs:
           set -euo pipefail
           source scripts/fix_paths.sh
 
-          # Corrige links relativos dentro dos ficheiros Markdown
+          # ------------------------------------------------------------
+          # Normalização de links internos em Markdown
+          # ------------------------------------------------------------
           normalize_markdown_links() {
             sed -E \
               -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
@@ -458,41 +460,52 @@ jobs:
               -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
           }
 
-          # Obtém o ID da página correspondente a um path (tenta também variantes em maiúsculas)
+          # ------------------------------------------------------------
+          # Obtém o ID de uma página existente na Wiki.js
+          # Pesquisa apenas dentro de BASE_PATH (não em toda a wiki)
+          # Tolerante a diferenças de maiúsculas e acentuação
+          # ------------------------------------------------------------
           get_page_id() {
             local path="$1"
-            local QUERY='query ($path: String!) {
+            local segment
+            segment=$(basename "$path")
+
+            local QUERY='query ($locale: String!) {
               pages {
-                single(path: $path) {
-                  id title path
+                list(locale: $locale) {
+                  id
+                  title
+                  path
                 }
               }
             }'
 
-            # Primeira tentativa (path normal)
-            local PAYLOAD=$(jq -n --arg q "$QUERY" --arg path "$path" '{query: $q, variables: { path: $path }}')
+            local PAYLOAD=$(jq -n \
+              --arg q "$QUERY" \
+              --arg loc "$WIKI_LOCALE" \
+              '{ query: $q, variables: { locale: $loc } }')
+
             local RESULT=$(curl -sS -X POST "$WIKI_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data "$PAYLOAD")
-            local PAGE_ID=$(echo "$RESULT" | jq -r '.data.pages.single.id // empty')
 
-            # Segunda tentativa: última parte do path em maiúsculas (para README / CHANGELOG)
-            if [ -z "$PAGE_ID" ]; then
-              local upper_path
-              upper_path=$(echo "$path" | sed -E 's#([^/]+)$#\U\1#')
-              local PAYLOAD_UP=$(jq -n --arg q "$QUERY" --arg path "$upper_path" '{query: $q, variables: { path: $path }}')
-              local RESULT_UP=$(curl -sS -X POST "$WIKI_URL" \
-                -H "Authorization: Bearer $WIKI_API_TOKEN" \
-                -H "Content-Type: application/json" \
-                --data "$PAYLOAD_UP")
-              PAGE_ID=$(echo "$RESULT_UP" | jq -r '.data.pages.single.id // empty')
-            fi
-
-            echo "$PAGE_ID"
+            echo "$RESULT" | jq -r \
+              --arg base "$BASE_PATH" \
+              --arg seg "$segment" '
+                .data.pages.list[]
+                | select(.path | startswith($base))
+                | select(
+                    (.path | ascii_downcase | gsub("[^a-z0-9/_-]"; "")) 
+                    | endswith(($seg | ascii_downcase | gsub("[^a-z0-9/_-]"; "")))
+                  )
+                | .id
+              ' | head -n 1
           }
 
-          # Atualiza uma página existente na Wiki.js via GraphQL
+          # ------------------------------------------------------------
+          # Atualiza o conteúdo de uma página existente
+          # ------------------------------------------------------------
           update_wiki_page() {
             local id="$1"
             local content="$2"
@@ -543,6 +556,9 @@ jobs:
           ASSET_PATH_SAFE="${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}"
           export ASSET_PATH_SAFE
 
+          # ------------------------------------------------------------
+          # Atualiza uma página se foi alterada
+          # ------------------------------------------------------------
           update_if_changed() {
             local file="$1"
             local title="$2"
