@@ -173,6 +173,10 @@ jobs:
             echo "❌ GraphQL error:"; echo "$RESULT" | jq '.errors'; exit 1
           fi
 
+          # --- Listagem temporária para debug ---
+          echo "📋 Páginas com tag 'gh-sync' encontradas:"
+          echo "$RESULT" | jq -r '.data.pages.list[] | "- " + .path + " (" + .title + ")"'
+
           # --- Flags principais ---
           HAS_REPO_PATH=$(echo "$RESULT" | jq --arg path "$REPO_PATH" \
             '[.data.pages.list[] | select(.path | startswith($path))] | length > 0')
