@@ -242,13 +242,15 @@ jobs:
     runs-on: ubuntu-latest
     needs: [setup-env]
     outputs:
-      docs_changed: ${{ steps.check.outputs.docs_changed }}
-      readme_changed: ${{ steps.check.outputs.readme_changed }}
-      changelog_changed: ${{ steps.check.outputs.changelog_changed }}
-      doc_files_changed: ${{ steps.check.outputs.doc_files_changed }}
+      DOCS_CHANGED: ${{ steps.check.outputs.DOCS_CHANGED }}
+      README_CHANGED: ${{ steps.check.outputs.README_CHANGED }}
+      CHANGELOG_CHANGED: ${{ steps.check.outputs.CHANGELOG_CHANGED }}
+      DOC_FILES_CHANGED: ${{ steps.check.outputs.DOC_FILES_CHANGED }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # precisamos do histórico completo para o git diff funcionar corretamente
 
       - name: Get changed files
         id: changed-files
@@ -257,47 +259,57 @@ jobs:
           BEFORE="${{ github.event.before }}"
           ZERO="0000000000000000000000000000000000000000"
 
+          echo "🔍 Determining changed files..."
           if [ -z "$BEFORE" ] || [ "$BEFORE" = "$ZERO" ]; then
-            # Run manual / sem 'before': se houver commit pai, difere HEAD^..HEAD;
-            # senão, considera apenas ficheiros do último commit.
+            # Se for o primeiro commit ou run manual
             if git rev-parse HEAD^ >/dev/null 2>&1; then
               git diff --name-only --diff-filter=AM HEAD^ HEAD > changed_files.txt
             else
               git show --name-only --pretty="" --diff-filter=AM HEAD > changed_files.txt
             fi
           else
-            git fetch origin "$BEFORE" --depth=1 || true
+            # Só compara o intervalo real
             git diff --name-only --diff-filter=AM "$BEFORE" ${{ github.sha }} > changed_files.txt
           fi
 
-          echo "🔍 Changed files:"
-          cat changed_files.txt || true
+          echo "Changed files:"
+          cat changed_files.txt || echo "(none)"
+          echo "----"
+          # Remove duplicados e linhas vazias
+          awk 'NF && !a[$0]++' changed_files.txt > tmp && mv tmp changed_files.txt
+          cat changed_files.txt
 
       - name: Check if documentation files changed
         id: check
         run: |
           set -euo pipefail
 
-          # Docs  
-          if grep -qE '^documentation/.+\.md$' changed_files.txt; then
-            echo "docs_changed=true" >> "$GITHUB_OUTPUT"
-            DOC_FILES_CHANGED=$(grep -E '^documentation/.+\.md$' changed_files.txt | tr -d '\r' | xargs)
-            echo "doc_files_changed=${DOC_FILES_CHANGED}" >> "$GITHUB_OUTPUT"
-            echo "Changed documentation files: ${DOC_FILES_CHANGED}"
+          DOC_FILES_CHANGED=$(grep -E '^documentation/.+\.md$' changed_files.txt || true)
+          DOC_FILES_CHANGED=$(echo "$DOC_FILES_CHANGED" | tr -d '\r' | sort -u | tr '\n' ' ' | xargs)
+
+          if [ -n "$DOC_FILES_CHANGED" ]; then
+            echo "📄 Documentation files changed: $DOC_FILES_CHANGED"
+            echo "DOCS_CHANGED=true" >> "$GITHUB_OUTPUT"
+            echo "DOC_FILES_CHANGED=$DOC_FILES_CHANGED" >> "$GITHUB_OUTPUT"
           else
-            echo "docs_changed=false" >> "$GITHUB_OUTPUT"
-            echo "doc_files_changed=" >> "$GITHUB_OUTPUT"
+            echo "📄 No documentation files changed."
+            echo "DOCS_CHANGED=false" >> "$GITHUB_OUTPUT"
+            echo "DOC_FILES_CHANGED=" >> "$GITHUB_OUTPUT"
           fi
 
-          # README
-          grep -qE '^README\.md$' changed_files.txt \
-            && echo "readme_changed=true"  >> "$GITHUB_OUTPUT" \
-            || echo "readme_changed=false" >> "$GITHUB_OUTPUT"
+          if grep -qE '^README\.md$' changed_files.txt; then
+            echo "📘 README.md changed."
+            echo "README_CHANGED=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "README_CHANGED=false" >> "$GITHUB_OUTPUT"
+          fi
 
-          # CHANGELOG
-          grep -qE '^CHANGELOG\.md$' changed_files.txt \
-            && echo "changelog_changed=true"  >> "$GITHUB_OUTPUT" \
-            || echo "changelog_changed=false" >> "$GITHUB_OUTPUT"
+          if grep -qE '^CHANGELOG\.md$' changed_files.txt; then
+            echo "📘 CHANGELOG.md changed."
+            echo "CHANGELOG_CHANGED=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "CHANGELOG_CHANGED=false" >> "$GITHUB_OUTPUT"
+          fi
 
   
   # --- Phase 4: Content Creation ---
@@ -464,20 +476,14 @@ jobs:
           # ------------------------------------------------------------
           # Obtém o ID de uma página existente na Wiki.js
           # Pesquisa apenas dentro de BASE_PATH (não em toda a wiki)
-          # Tolerante a diferenças de maiúsculas e acentuação
           # ------------------------------------------------------------
           get_page_id() {
             local path="$1"
-            local segment
-            segment=$(basename "$path")
+            local seg=$(basename "$path")
 
             local QUERY='query ($locale: String!) {
               pages {
-                list(locale: $locale) {
-                  id
-                  title
-                  path
-                }
+                list(locale: $locale) { id title path }
               }
             }'
 
@@ -493,7 +499,7 @@ jobs:
 
             echo "$RESULT" | jq -r \
               --arg base "$BASE_PATH" \
-              --arg seg "$segment" '
+              --arg seg "$seg" '
                 .data.pages.list[]
                 | select(.path | startswith($base))
                 | select(
@@ -533,8 +539,8 @@ jobs:
               -H "Content-Type: application/json" \
               --data "$PAYLOAD")
 
-            local SUCCEEDED=$(echo "$RESULT" | jq -r '.data.pages.update.responseResult.succeeded // empty')
-            if [ "$SUCCEEDED" = "true" ]; then
+            local OK=$(echo "$RESULT" | jq -r '.data.pages.update.responseResult.succeeded // empty')
+            if [ "$OK" = "true" ]; then
               echo "✅ Updated $title successfully."
             else
               echo "⚠️ Failed to update $title"
@@ -557,12 +563,22 @@ jobs:
           ASSET_PATH_SAFE="${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}"
           export ASSET_PATH_SAFE
 
-          # Lista de ficheiros em falta (detetados na fase 2)
-          MISSING_FILES=(${{ needs.check-pages-folders.outputs.missing_files }})
+          # --- Ficheiros em falta (não atualizar) ---
+          RAW_MISSING="${{ needs.check-pages-folders.outputs.missing_files }}"
+          IFS=' ' read -r -a MISSING_FILES <<< "$(echo "$RAW_MISSING" | tr -s ' ')"
           echo "🧩 Missing files (não atualizáveis): ${MISSING_FILES[*]}"
 
+          # --- Ficheiros de documentação alterados ---
+          RAW_CHANGED="${{ needs.check-altered-files.outputs.DOC_FILES_CHANGED }}"
+          IFS=' ' read -r -a CHANGED_DOCS <<< "$(echo "$RAW_CHANGED" | tr -s ' ')"
+
+          # --- Flags de alteração ---
+          DOCS_CHANGED="${{ needs.check-altered-files.outputs.DOCS_CHANGED }}"
+          README_CHANGED="${{ needs.check-altered-files.outputs.README_CHANGED }}"
+          CHANGELOG_CHANGED="${{ needs.check-altered-files.outputs.CHANGELOG_CHANGED }}"
+
           # ------------------------------------------------------------
-          # Atualiza uma página se foi alterada e já existe na Wiki
+          # Função genérica de atualização
           # ------------------------------------------------------------
           update_if_changed() {
             local file="$1"
@@ -573,7 +589,6 @@ jobs:
             if [ "$changed_flag" = "true" ] && [ -f "$file" ]; then
               local path="${REPO_PATH}/${subpath}"
 
-              # Ignorar se for um ficheiro ainda não criado
               for MISS in "${MISSING_FILES[@]}"; do
                 [[ "$MISS" == *"${subpath}"* ]] && echo "⚠️ Skipping $subpath (still missing in Wiki)" && return
               done
@@ -587,37 +602,36 @@ jobs:
 
               echo "🆔 Page ID: $PAGE_ID"
               CONTENT=$(tr -d '\r' < "$file" | fix_image_paths | normalize_markdown_links)
+              SHORT_SHA="${GITHUB_SHA:-unknown}"
+              CONTENT="${CONTENT}\n\n<!-- synced:${SHORT_SHA:0:7} -->"
               update_wiki_page "$PAGE_ID" "$CONTENT" "$title"
             fi
           }
 
           # --- README ---
-          update_if_changed "README.md" "README" "readme" "${{ needs.check-altered-files.outputs.readme_changed }}"
+          update_if_changed "README.md" "README" "readme" "$README_CHANGED"
 
           # --- CHANGELOG ---
-          update_if_changed "CHANGELOG.md" "CHANGELOG" "changelog" "${{ needs.check-altered-files.outputs.changelog_changed }}"
+          update_if_changed "CHANGELOG.md" "CHANGELOG" "changelog" "$CHANGELOG_CHANGED"
 
-          # --- Documentation files ---
-          if [ "${{ needs.check-altered-files.outputs.docs_changed }}" = "true" ]; then
-            CHANGED_DOCS=(${{ needs.check-altered-files.outputs.doc_files_changed }})
-
-            # Remover ficheiros que ainda não existem na Wiki
-            for MISS in "${MISSING_FILES[@]}"; do
-              MISS_NAME=$(basename "$MISS")
-              CHANGED_DOCS=("${CHANGED_DOCS[@]/documentation\/$MISS_NAME.md}")
-            done
-
+          # --- Documentation ---
+          if [ "$DOCS_CHANGED" = "true" ]; then
             echo "📄 Documentation files to update: ${CHANGED_DOCS[*]}"
-
             for FILE in "${CHANGED_DOCS[@]}"; do
+              [ -z "$FILE" ] && continue
               DOC_TITLE=$(basename "$FILE" .md)
               DOC_PATH="${REPO_PATH}/documentation/${DOC_TITLE}"
               PAGE_ID=$(get_page_id "$DOC_PATH")
               [ -z "$PAGE_ID" ] && echo "⚠️ Skipping: no Wiki page for ${DOC_TITLE}" && continue
               CONTENT=$(tr -d '\r' < "documentation/${DOC_TITLE}.md" | fix_image_paths | normalize_markdown_links)
+              SHORT_SHA="${GITHUB_SHA:-unknown}"
+              CONTENT="${CONTENT}\n\n<!-- synced:${SHORT_SHA:0:7} -->"
               update_wiki_page "$PAGE_ID" "$CONTENT" "$DOC_TITLE"
             done
+          else
+            echo "ℹ️ No documentation files changed."
           fi
+
 
   # --- Phase 6: Asset Upload ---
   upload-docs-media:
