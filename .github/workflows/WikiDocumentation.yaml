@@ -425,8 +425,7 @@ jobs:
             echo "✅ No missing documentation files to create."
           fi
 
-
-   # --- Phase 5: Content Updates ---
+  # --- Phase 5: Content Updates ---
   update-pages:
     name: "Update Wiki Pages"
     runs-on: ubuntu-latest
@@ -450,6 +449,7 @@ jobs:
           set -euo pipefail
           source scripts/fix_paths.sh
 
+          # Corrige links relativos dentro dos ficheiros Markdown
           normalize_markdown_links() {
             sed -E \
               -e 's#\]\([[:space:]]*/documentation/#](./documentation/#g' \
@@ -458,6 +458,7 @@ jobs:
               -e 's#\]\([[:space:]]*\./documentation/([^)]*)\.md\)#](./documentation/\1)#g'
           }
 
+          # Obtém o ID da página correspondente a um path (tenta também variantes em maiúsculas)
           get_page_id() {
             local path="$1"
             local QUERY='query ($path: String!) {
@@ -467,17 +468,36 @@ jobs:
                 }
               }
             }'
+
+            # Primeira tentativa (path normal)
             local PAYLOAD=$(jq -n --arg q "$QUERY" --arg path "$path" '{query: $q, variables: { path: $path }}')
-            curl -sS -X POST "$WIKI_URL" \
+            local RESULT=$(curl -sS -X POST "$WIKI_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -H "Content-Type: application/json" \
-              --data "$PAYLOAD" | jq -r '.data.pages.single.id // empty'
+              --data "$PAYLOAD")
+            local PAGE_ID=$(echo "$RESULT" | jq -r '.data.pages.single.id // empty')
+
+            # Segunda tentativa: última parte do path em maiúsculas (para README / CHANGELOG)
+            if [ -z "$PAGE_ID" ]; then
+              local upper_path
+              upper_path=$(echo "$path" | sed -E 's#([^/]+)$#\U\1#')
+              local PAYLOAD_UP=$(jq -n --arg q "$QUERY" --arg path "$upper_path" '{query: $q, variables: { path: $path }}')
+              local RESULT_UP=$(curl -sS -X POST "$WIKI_URL" \
+                -H "Authorization: Bearer $WIKI_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                --data "$PAYLOAD_UP")
+              PAGE_ID=$(echo "$RESULT_UP" | jq -r '.data.pages.single.id // empty')
+            fi
+
+            echo "$PAGE_ID"
           }
 
+          # Atualiza uma página existente na Wiki.js via GraphQL
           update_wiki_page() {
             local id="$1"
             local content="$2"
             local title="$3"
+
             local QUERY='mutation ($id: Int!, $content: String!, $locale: String!) {
               pages {
                 update(id: $id, content: $content, editor: "markdown",
@@ -486,6 +506,7 @@ jobs:
                 }
               }
             }'
+
             local PAYLOAD=$(jq -n \
               --arg q "$QUERY" \
               --argjson id "$id" \
@@ -519,7 +540,6 @@ jobs:
           REPO_PATH="${BASE_PATH}/${REPO_SLUG}"
           echo "📂 Repository path: $REPO_PATH"
 
-          # Helper for image paths
           ASSET_PATH_SAFE="${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}"
           export ASSET_PATH_SAFE
 
