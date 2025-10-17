@@ -136,13 +136,15 @@ jobs:
           set -euo pipefail
 
           # Definir Paths
-          REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
-          DOC_PREFIX="$(echo "${REPO_PATH}/documentation/" | sed 's#//*#/#g')"
-          README_PATH="$(echo "${REPO_PATH}/readme" | sed 's#//*#/#g')"
-          CHANGELOG_PATH="$(echo "${REPO_PATH}/changelog" | sed 's#//*#/#g')"
+          REPO_PATH_LOG="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
+          REPO_SLUG="$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')" # sanitized for Wiki.js path
+          REPO_PATH="$(echo "${BASE_PATH}/${REPO_SLUG}" | sed 's#//*#/#g' | sed 's#/$##')" # sanitized for Wiki.js path
+          DOC_PREFIX="$(echo "${REPO_PATH}/documentation/" | sed 's#//*#/#g')" # sanitized for Wiki.js path
+          README_PATH="$(echo "${REPO_PATH}/readme" | sed 's#//*#/#g')" # sanitized for Wiki.js path
+          CHANGELOG_PATH="$(echo "${REPO_PATH}/changelog" | sed 's#//*#/#g')" # sanitized for Wiki.js path
 
           echo "🔍 Verificações:"
-          echo "  • REPO_PATH      = $REPO_PATH"
+          echo "  • REPO_PATH      = $REPO_PATH_LOG"
           echo "  • DOC_PREFIX     = $DOC_PREFIX"
           echo
 
@@ -318,8 +320,10 @@ jobs:
           # Importar função partilhada
           source scripts/fix_paths.sh
 
-          REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
-          DOC_PREFIX="$(echo "${REPO_PATH}/documentation/" | sed 's#//*#/#g')"
+          REPO_PATH_LOG="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
+          REPO_SLUG="$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')" # sanitized for Wiki.js path
+          REPO_PATH="$(echo "${BASE_PATH}/${REPO_SLUG}" | sed 's#//*#/#g' | sed 's#/$##')" # sanitized for Wiki.js path
+          DOC_PREFIX="$(echo "${REPO_PATH}/documentation/" | sed 's#//*#/#g')" # sanitized for Wiki.js path
 
           # Read missing files from output
           missing_files=(${{ needs.check-pages-folders.outputs.missing_files }})
@@ -437,9 +441,11 @@ jobs:
           # ------------------------------------------------------------
           # 🧭 Caminhos principais
           # ------------------------------------------------------------
-          REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
-          README_PATH="$(echo "${REPO_PATH}/readme" | sed 's#//*#/#g')"
-          echo "📄 REPO_PATH: ${REPO_PATH}"
+          REPO_PATH_LOG="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
+          REPO_SLUG="$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')" # sanitized for Wiki.js path
+          REPO_PATH="$(echo "${BASE_PATH}/${REPO_SLUG}" | sed 's#//*#/#g' | sed 's#/$##')" # sanitized for Wiki.js path
+          README_PATH="$(echo "${REPO_PATH}/readme" | sed 's#//*#/#g')" # sanitized for Wiki.js path
+          echo "📄 REPO_PATH: ${REPO_PATH_LOG}"
           echo "📘 README_PATH: ${README_PATH}"
 
           if [ ! -f README.md ]; then
@@ -528,8 +534,10 @@ jobs:
           # ------------------------------------------------------------
           # 1️⃣ Construir caminho REPO_PATH e CHANGELOG_PATH
           # ------------------------------------------------------------
-          REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
-          CHANGELOG_PATH="$(echo "${REPO_PATH}/changelog" | sed 's#//*#/#g')"
+          REPO_PATH_LOG="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
+          REPO_SLUG="$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')" # sanitized for Wiki.js path
+          REPO_PATH="$(echo "${BASE_PATH}/${REPO_SLUG}" | sed 's#//*#/#g' | sed 's#/$##')" # sanitized for Wiki.js path
+          CHANGELOG_PATH="$(echo "${REPO_PATH}/changelog" | sed 's#//*#/#g')" # sanitized for Wiki.js path
           echo "📄 CHANGELOG_PATH: ${CHANGELOG_PATH}"
 
           ASSET_PREFIX="/${ASSET_PATH_SAFE}/documentation/"
@@ -624,7 +632,8 @@ jobs:
           set -euo pipefail
           echo "🔍 Querying Wiki.js for existing pages..."
 
-          REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
+          REPO_SLUG="$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')" # sanitized for Wiki.js path
+          REPO_PATH="$(echo "${BASE_PATH}/${REPO_SLUG}" | sed 's#//*#/#g' | sed 's#/$##')" # sanitized for Wiki.js path
 
           QUERY='query ($locale: String!) { pages { list(locale: $locale) { id title path } } }'
           JSON_PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" '{query: $q, variables: { locale: $loc }}')
@@ -649,7 +658,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
+          REPO_SLUG="$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')" # sanitized for Wiki.js path
+          REPO_PATH="$(echo "${BASE_PATH}/${REPO_SLUG}" | sed 's#//*#/#g' | sed 's#/$##')" # sanitized for Wiki.js path
           DOC_ROOT="$(echo "${REPO_PATH}/documentation/" | sed 's#//*#/#g')"
 
           # List all documentation files from the output
@@ -771,8 +781,9 @@ jobs:
           set -euo pipefail
           echo "🔍 Searching README page in Wiki.js..."
 
-          REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
-          README_PATH="$(echo "${REPO_PATH}/readme" | sed 's#//*#/#g')"
+          REPO_SLUG="$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')" # sanitized for Wiki.js path
+          REPO_PATH="$(echo "${BASE_PATH}/${REPO_SLUG}" | sed 's#//*#/#g' | sed 's#/$##')" # sanitized for Wiki.js path
+          README_PATH="$(echo "${REPO_PATH}/readme" | sed 's#//*#/#g')" # sanitized for Wiki.js path
 
           QUERY='query ($locale: String!) { pages { list(locale: $locale) { id path title } } }'
           JSON_PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" '{query: $q, variables: { locale: $loc }}')
@@ -865,8 +876,9 @@ jobs:
           set -euo pipefail
           echo "🔍 Searching CHANGELOG page in Wiki.js..."
 
-          REPO_PATH="$(echo "${BASE_PATH}/${REPO_NAME}" | sed 's#//*#/#g' | sed 's#/$##')"
-          CHANGELOG_PATH="$(echo "${REPO_PATH}/changelog" | sed 's#//*#/#g')"
+          REPO_SLUG="$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')" # sanitized for Wiki.js path
+          REPO_PATH="$(echo "${BASE_PATH}/${REPO_SLUG}" | sed 's#//*#/#g' | sed 's#/$##')" # sanitized for Wiki.js path
+          CHANGELOG_PATH="$(echo "${REPO_PATH}/changelog" | sed 's#//*#/#g')" # sanitized for Wiki.js path
 
           QUERY='query ($locale: String!) { pages { list(locale: $locale) { id path title } } }'
           JSON_PAYLOAD=$(jq -n --arg q "$QUERY" --arg loc "$WIKI_LOCALE" '{query: $q, variables: { locale: $loc }}')
