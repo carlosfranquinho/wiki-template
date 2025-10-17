@@ -556,8 +556,12 @@ jobs:
           ASSET_PATH_SAFE="${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}"
           export ASSET_PATH_SAFE
 
+          # Lista de ficheiros em falta (detetados na fase 2)
+          MISSING_FILES=(${{ needs.check-pages-folders.outputs.missing_files }})
+          echo "🧩 Missing files (não atualizáveis): ${MISSING_FILES[*]}"
+
           # ------------------------------------------------------------
-          # Atualiza uma página se foi alterada
+          # Atualiza uma página se foi alterada e já existe na Wiki
           # ------------------------------------------------------------
           update_if_changed() {
             local file="$1"
@@ -567,12 +571,19 @@ jobs:
 
             if [ "$changed_flag" = "true" ] && [ -f "$file" ]; then
               local path="${REPO_PATH}/${subpath}"
+
+              # Ignorar se for um ficheiro ainda não criado
+              for MISS in "${MISSING_FILES[@]}"; do
+                [[ "$MISS" == *"${subpath}"* ]] && echo "⚠️ Skipping $subpath (still missing in Wiki)" && return
+              done
+
               echo "🔍 Checking page at $path"
               PAGE_ID=$(get_page_id "$path")
               if [ -z "$PAGE_ID" ]; then
                 echo "⚠️ Page not found in Wiki ($path)."
                 return
               fi
+
               echo "🆔 Page ID: $PAGE_ID"
               CONTENT=$(tr -d '\r' < "$file" | fix_image_paths | normalize_markdown_links)
               update_wiki_page "$PAGE_ID" "$CONTENT" "$title"
@@ -588,6 +599,15 @@ jobs:
           # --- Documentation files ---
           if [ "${{ needs.check-altered-files.outputs.docs_changed }}" = "true" ]; then
             CHANGED_DOCS=(${{ needs.check-altered-files.outputs.doc_files_changed }})
+
+            # Remover ficheiros que ainda não existem na Wiki
+            for MISS in "${MISSING_FILES[@]}"; do
+              MISS_NAME=$(basename "$MISS")
+              CHANGED_DOCS=("${CHANGED_DOCS[@]/documentation\/$MISS_NAME.md}")
+            done
+
+            echo "📄 Documentation files to update: ${CHANGED_DOCS[*]}"
+
             for FILE in "${CHANGED_DOCS[@]}"; do
               DOC_TITLE=$(basename "$FILE" .md)
               DOC_PATH="${REPO_PATH}/documentation/${DOC_TITLE}"
