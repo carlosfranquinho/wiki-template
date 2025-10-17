@@ -622,7 +622,6 @@ jobs:
     name: "Upload Documentation Media"
     runs-on: ubuntu-latest
     needs: [setup-env]
-    # faz sempre o upload se houver media
     if: always()
 
     env:
@@ -660,11 +659,9 @@ jobs:
 
           echo "📡 Upload endpoint: $UPLOAD_URL"
 
-          # --- Utilidades ---
+          # --- Utils ---
           slugify() {
-            echo "$1" \
-              | tr '[:upper:]' '[:lower:]' \
-              | sed -E 's/[[:space:]]+/-/g; s/[^a-z0-9._-]+/-/g; s/-{2,}/-/g; s/^-+|-+$//g'
+            echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[[:space:]]+/-/g; s/[^a-z0-9._-]+/-/g; s/-{2,}/-/g; s/^-+|-+$//g'
           }
 
           call_graphql() {
@@ -675,7 +672,6 @@ jobs:
               --data "$payload"
           }
 
-          # --- Cache para IDs de pastas ---
           declare -A FOLDER_CACHE=()
 
           ensure_folder() {
@@ -684,12 +680,10 @@ jobs:
             local slug; slug=$(slugify "$name")
             local key="${parent}:${slug}"
 
-            # cache
             if [[ -n "${FOLDER_CACHE[$key]:-}" ]]; then
               echo "${FOLDER_CACHE[$key]}"; return
             fi
 
-            # procurar
             local query result id
             query='query($pid:Int!){assets{folders(parentFolderId:$pid){id name slug}}}'
             result=$(call_graphql "$(jq -n --arg q "$query" --argjson pid "$parent" '{query:$q,variables:{pid:$pid}}')")
@@ -700,7 +694,6 @@ jobs:
               FOLDER_CACHE[$key]="$id"; echo "$id"; return
             fi
 
-            # criar
             local mutation='mutation($pid:Int!,$slug:String!,$name:String!){assets{createFolder(parentFolderId:$pid,slug:$slug,name:$name){folder{id}}}}'
             result=$(call_graphql "$(jq -n --arg q "$mutation" --argjson pid "$parent" --arg slug "$slug" --arg name "$name" '{query:$q,variables:{pid:$pid,slug:$slug,name:$name}}')")
             id=$(echo "$result" | jq -r '.data.assets.createFolder.folder.id')
@@ -722,8 +715,13 @@ jobs:
             echo "$current"
           }
 
-          # --- Upload ---
-          ROOT_ID=0  # raiz dos assets
+          # --- Determinar pasta-base ---
+          ASSET_FOLDER_PATH="${ASSET_PATH_SAFE}/documentation"
+          echo "📂 Ensuring asset path exists: $ASSET_FOLDER_PATH"
+          ROOT_ID=$(ensure_path 0 "$ASSET_FOLDER_PATH")
+          echo "📦 Base folder ID = $ROOT_ID"
+
+          # --- Upload files ---
           FAILED=0
           IFS=';' read -ra FILES <<< "$MEDIA_FILES"
 
