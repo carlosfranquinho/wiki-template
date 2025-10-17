@@ -617,12 +617,11 @@ jobs:
           fi
 
 
-  # --- Phase 6: Asset Upload (always incremental) ---
+  # --- Phase 6: Asset Upload (always sync all media) ---
   upload-docs-media:
-    name: "Upload or Update Documentation Media"
+    name: "Upload Documentation Media"
     runs-on: ubuntu-latest
-    needs: [setup-env, check-pages-folders, check-altered-files]
-    if: always()
+    needs: [setup-env, check-pages-folders]
     env:
       ASSET_PATH_SAFE: ${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}
 
@@ -630,47 +629,23 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Detect Added or Modified Media Files
-        id: detect
+      - name: Collect Media Files
+        id: collect
         run: |
           set -euo pipefail
+          echo "🔍 Collecting all media files in documentation/ (excluding .md)..."
+          MEDIA_FILES=$(find documentation/ -type f ! -name "*.md" 2>/dev/null || true)
 
-          echo "🔍 Detecting new or modified media files in documentation/"
-
-          # Garante que temos histórico completo
-          git fetch --prune --unshallow || git fetch --all
-          git fetch origin main || true
-
-          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-          echo "Current branch: $CURRENT_BRANCH"
-
-          # Determina o commit base
-          if git rev-parse origin/main >/dev/null 2>&1; then
-            BASE_REF=$(git merge-base HEAD origin/main)
-          else
-            BASE_REF=$(git rev-list --max-parents=0 HEAD | head -n1)
-          fi
-
-          echo "Comparing against base commit: $BASE_REF"
-          echo "Changed files since base:"
-
-          # Mostra tudo o que mudou em documentation/
-          git diff --name-only "$BASE_REF" HEAD -- 'documentation/' || true
-
-          # Filtra apenas media (exclui .md)
-          CHANGED_MEDIA=$(git diff --name-only "$BASE_REF" HEAD -- 'documentation/' | grep -v '\.md$' || true)
-
-          if [ -z "$CHANGED_MEDIA" ]; then
-            echo "ℹ️  No new or modified media files detected."
+          if [ -z "$MEDIA_FILES" ]; then
+            echo "ℹ️  No media files found."
             echo "MEDIA_FILES=" >> "$GITHUB_ENV"
           else
-            echo "📸 Media files to upload/update:"
-            echo "$CHANGED_MEDIA"
-            echo "MEDIA_FILES=$(echo "$CHANGED_MEDIA" | paste -sd ';' -)" >> "$GITHUB_ENV"
+            echo "📸 Found media files:"
+            echo "$MEDIA_FILES"
+            echo "MEDIA_FILES=$(echo "$MEDIA_FILES" | paste -sd ';' -)" >> "$GITHUB_ENV"
           fi
 
-
-      - name: Ensure asset folders exist
+      - name: Ensure asset folder structure exists
         if: env.MEDIA_FILES != ''
         env:
           WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
@@ -708,7 +683,7 @@ jobs:
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data "$(jq -n --arg q "$m" '{query:$q}')")
-            echo "$r" | jq .
+            echo "$r" | jq . >/dev/null
           }
 
           echo "📂 Ensuring folder path: $APP_PATH"
@@ -730,14 +705,14 @@ jobs:
           echo "DOC_ROOT_FOLDER_ID=$CURRENT_PARENT" >> "$GITHUB_ENV"
           echo "UPLOAD_URL=$UPLOAD_URL" >> "$GITHUB_ENV"
 
-      - name: Upload new or changed media
+      - name: Upload all media files
         if: env.MEDIA_FILES != ''
         env:
           WIKI_API_TOKEN: ${{ secrets.WIKI_API_TOKEN }}
         run: |
           set -euo pipefail
-          FAILED=0
           IFS=';' read -ra FILES <<< "$MEDIA_FILES"
+          FAILED=0
 
           for filepath in "${FILES[@]}"; do
             [ -z "$filepath" ] && continue
@@ -745,7 +720,7 @@ jobs:
               echo "⚠️  Missing file: $filepath"
               continue
             fi
-            echo "⬆️ Uploading or replacing '$filepath'..."
+            echo "⬆️ Uploading '$filepath'..."
             RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$UPLOAD_URL" \
               -H "Authorization: Bearer $WIKI_API_TOKEN" \
               -F "mediaUpload={\"folderId\":${DOC_ROOT_FOLDER_ID}}" \
