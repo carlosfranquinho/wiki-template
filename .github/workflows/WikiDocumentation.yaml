@@ -612,6 +612,8 @@ jobs:
       - name: Update changed pages
         run: |
           set -euo pipefail
+          export ASSET_PATH_SAFE="${{ needs.setup-env.outputs.ASSET_PATH_SAFE }}" || true
+          : "${ASSET_PATH_SAFE:=default}"
           source scripts/wiki_utils.sh
 
           REPO_SLUG=$(echo "$REPO_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | sed -E 's/[[:space:]]+/-/g; s/[^A-Za-z0-9._-]+//g')
